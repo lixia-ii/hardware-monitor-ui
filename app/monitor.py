@@ -7,6 +7,7 @@ import threading
 import tkinter as tk
 from tkinter import ttk
 
+import hwinfo
 import sensors
 
 INTERVAL_MS = 1000
@@ -22,8 +23,7 @@ class App:
     def __init__(self):
         self.root = r = tk.Tk()
         r.title("硬件监控")
-        r.geometry("360x380")
-        r.minsize(320, 340)
+        r.minsize(360, 340)
         try:
             r.iconbitmap(os.path.join(os.path.dirname(os.path.abspath(__file__)), "app.ico"))
         except tk.TclError:
@@ -38,6 +38,11 @@ class App:
 
         self.case_box = ttk.LabelFrame(main, text="机箱 / 主板风扇", padding=8)
         self.case_box.pack(fill="x", pady=(8, 0))
+
+        self.extra_box = ttk.LabelFrame(main, text="硬盘 / 内存 / 网卡温度", padding=8)
+        self.extra_box.pack(fill="x", pady=(8, 0))
+
+        ttk.Button(main, text="硬件信息", command=self.show_info).pack(anchor="e", pady=(8, 0))
 
         self.status = ttk.Label(main, text="", foreground="#d12f2f", wraplength=320)
         self.status.pack(fill="x", pady=(8, 0))
@@ -55,6 +60,70 @@ class App:
             subprocess.run(["taskkill", "/F", "/IM", "LibreHardwareMonitor.exe"],
                            capture_output=True, creationflags=subprocess.CREATE_NO_WINDOW)
         self.root.destroy()
+
+    def show_info(self):
+        """打开硬件信息窗口 (已打开则置前)。信息在后台线程读取, 避免卡界面。"""
+        if getattr(self, "info_win", None) and self.info_win.winfo_exists():
+            self.info_win.lift()
+            return
+        w = self.info_win = tk.Toplevel(self.root)
+        w.title("硬件信息")
+        w.minsize(560, 360)
+        try:
+            w.iconbitmap(os.path.join(os.path.dirname(os.path.abspath(__file__)), "app.ico"))
+        except tk.TclError:
+            pass
+        body = ttk.Frame(w, padding=12)
+        body.pack(fill="both", expand=True)
+
+        cards = ttk.Frame(body)
+        cards.pack(fill="x")
+        vals = {}
+        for i, (key, title) in enumerate((("model", "型号信息"), ("os", "系统信息"), ("uptime", "运行时间"))):
+            cards.columnconfigure(i, weight=1, uniform="card")
+            box = ttk.LabelFrame(cards, text=title, padding=10)
+            box.grid(row=0, column=i, sticky="nsew", padx=(0 if i == 0 else 6, 0))
+            vals[key] = ttk.Label(box, text="读取中...", font=("Microsoft YaHei UI", 10),
+                                  wraplength=160, justify="center")
+            vals[key].pack(expand=True)
+
+        detail = ttk.LabelFrame(body, text="详细信息", padding=10)
+        detail.pack(fill="both", expand=True, pady=(10, 0))
+
+        def uptime():
+            if not w.winfo_exists():
+                return
+            s = ctypes.windll.kernel32.GetTickCount64() // 1000
+            vals["uptime"].config(text=f"{s // 86400}天{s % 86400 // 3600}小时{s % 3600 // 60}分钟{s % 60}秒")
+            w.after(1000, uptime)
+        uptime()
+
+        def fill(info):
+            if not w.winfo_exists():
+                return
+            if info["error"]:
+                vals["model"].config(text=info["error"])
+                return
+            vals["model"].config(text=info["model"])
+            vals["os"].config(text=info["os"])
+            r = 0
+            for label, lines in info["details"]:
+                ttk.Label(detail, text=label + ":").grid(row=r, column=0, sticky="nw", padx=(0, 12))
+                for line in lines or ["--"]:
+                    ttk.Label(detail, text=line).grid(row=r, column=1, sticky="w")
+                    r += 1
+
+        result = []  # 后台线程只写结果, 界面更新留在主线程 (tkinter 非线程安全)
+        threading.Thread(target=lambda: result.append(hwinfo.load()), daemon=True).start()
+
+        def wait():
+            if not w.winfo_exists():
+                return
+            if result:
+                fill(result[0])
+            else:
+                w.after(100, wait)
+        wait()
 
     def _section(self, parent, title, items):
         box = ttk.LabelFrame(parent, text=title, padding=8)
@@ -79,29 +148,59 @@ class App:
             self.render(self.data)
         self.root.after(INTERVAL_MS, self.tick)
 
+    @staticmethod
+    def _set(label, text, fg=None):
+        """只在内容变化时才更新控件, 避免整页重绘闪烁。"""
+        if label.cget("text") != text:
+            label.config(text=text)
+        if fg is not None and str(label.cget("fg")) != fg:
+            label.config(fg=fg)
+
+    def _rows(self, box, rows, empty_text, make_value):
+        """动态行: 仅当行集合变化时才重建, 否则只更新数值。rows: [(key, 名称, 数值文本, 颜色)]"""
+        keys = [r[0] for r in rows]
+        if getattr(box, "_keys", None) != keys:
+            for w in box.winfo_children():
+                w.destroy()
+            box._keys, box._vals = keys, {}
+            if not rows:
+                ttk.Label(box, text=empty_text, foreground="gray").pack(anchor="w")
+            for key, name, _, _ in rows:
+                f = ttk.Frame(box)
+                f.pack(fill="x", pady=1)
+                ttk.Label(f, text=name).pack(side="left")
+                box._vals[key] = make_value(f)
+        for key, _, text, color in rows:
+            self._set(box._vals[key], text, color)
+
     def render(self, d):
         for k in ("cpu_temp", "gpu_temp"):
             t = d[k]
-            self.values[k].config(text="--" if t is None else f"{t:.0f} °C", fg=temp_color(t))
-        self.values["cpu_fan"].config(text="--" if d["cpu_fan"] is None else f"{d['cpu_fan']:.0f} RPM")
+            self._set(self.values[k], "--" if t is None else f"{t:.0f} °C", temp_color(t))
+        self._set(self.values["cpu_fan"], "--" if d["cpu_fan"] is None else f"{d['cpu_fan']:.0f} RPM")
         if d["gpu_fan"] is not None:
-            self.values["gpu_fan"].config(text=f"{d['gpu_fan']:.0f} RPM")
+            gpu_fan = f"{d['gpu_fan']:.0f} RPM"
         elif d["gpu_fan_pct"] is not None:
-            self.values["gpu_fan"].config(text=f"{d['gpu_fan_pct']:.0f} %")
+            gpu_fan = f"{d['gpu_fan_pct']:.0f} %"
         else:
-            self.values["gpu_fan"].config(text="--")
+            gpu_fan = "--"
+        self._set(self.values["gpu_fan"], gpu_fan)
 
-        for w in self.case_box.winfo_children():
-            w.destroy()
-        if d["case_fans"]:
-            for name, rpm in d["case_fans"]:
-                f = ttk.Frame(self.case_box)
-                f.pack(fill="x", pady=1)
-                ttk.Label(f, text=name).pack(side="left")
-                ttk.Label(f, text=f"{rpm:.0f} RPM", font=("Consolas", 11)).pack(side="right")
-        else:
-            ttk.Label(self.case_box, text="未检测到(主板未提供风扇传感器)", foreground="gray").pack(anchor="w")
-        self.status.config(text=d["error"] or "")
+        self._rows(self.case_box,
+                   [(n, n, f"{rpm:.0f} RPM", None) for n, rpm in d["case_fans"]],
+                   "未检测到(主板未提供风扇传感器)",
+                   lambda f: self._pack_right(tk.Label(f, font=("Consolas", 11))))
+        self._rows(self.extra_box,
+                   [((k, n), f"[{sensors.EXTRA_LABELS[k]}] {n}", f"{t:.0f} °C", temp_color(t))
+                    for k, n, t in d["extra_temps"]],
+                   "未检测到(无硬盘/内存/网卡温度传感器)",
+                   lambda f: self._pack_right(tk.Label(f, font=("Consolas", 11, "bold"))))
+        self._set(self.status, d["error"] or "")
+
+    @staticmethod
+    def _pack_right(w):
+        w.pack(side="right")
+        return w
 
 
 if __name__ == "__main__":

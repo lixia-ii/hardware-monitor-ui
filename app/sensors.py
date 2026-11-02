@@ -14,9 +14,22 @@ def _parse(value):
     return float(m.group().replace(",", ".")) if m else None
 
 
+# 硬盘 / 内存 / 网卡: 按 LibreHardwareMonitor 的硬件图标识别
+_EXTRA_KINDS = {
+    "storage": ("hdd", "ssd", "nvme"),
+    "memory": ("ram", "memory"),
+    "network": ("nic", "network"),
+}
+EXTRA_LABELS = {"storage": "硬盘", "memory": "内存", "network": "网卡"}
+
+
 def _kind_of(node):
     """根据硬件节点的图标/名称判断类别: cpu / gpu / board / other"""
-    s = (node.get("ImageURL", "") + " " + node.get("Text", "")).lower()
+    img = node.get("ImageURL", "").lower()
+    for kind, keys in _EXTRA_KINDS.items():
+        if any(k in img for k in keys):
+            return kind
+    s = (img + " " + node.get("Text", "")).lower()
     if "cpu" in s or "ryzen" in s or "intel core" in s:
         return "cpu"
     if any(k in s for k in ("nvidia", "geforce", "radeon", "ati.png", "gpu", "intel arc")):
@@ -26,8 +39,12 @@ def _kind_of(node):
     return None
 
 
-def _walk(node, kind, out):
-    kind = _kind_of(node) or kind
+def _walk(node, kind, out, hw=None):
+    k = _kind_of(node)
+    if k:
+        kind = k
+        if k in _EXTRA_KINDS and node.get("Children"):
+            hw = node.get("Text", "")
     value = node.get("Value", "")
     img = node.get("ImageURL", "").lower()
     if value and not node.get("Children"):
@@ -37,8 +54,11 @@ def _walk(node, kind, out):
                 out["fans"].append((kind, node.get("Text", ""), v))
             elif "°" in value or "temperature" in img or value.rstrip().endswith("C"):
                 out["temps"].append((kind, node.get("Text", ""), v))
+                if kind in _EXTRA_KINDS:
+                    key = (kind, hw or node.get("Text", ""))
+                    out["extra"][key] = max(v, out["extra"].get(key, v))
     for c in node.get("Children", []):
-        _walk(c, kind, out)
+        _walk(c, kind, out, hw)
 
 
 def _pick_temp(temps, kind, prefer):
@@ -55,7 +75,7 @@ def _pick_temp(temps, kind, prefer):
 def _lhm():
     with urllib.request.urlopen(LHM_URL, timeout=1.5) as r:
         tree = json.load(r)
-    out = {"temps": [], "fans": []}
+    out = {"temps": [], "fans": [], "extra": {}}
     _walk(tree, None, out)
     return out
 
@@ -76,13 +96,16 @@ def _nvidia():
 
 
 def read():
-    """返回 dict: cpu_temp, gpu_temp (℃), cpu_fan, gpu_fan (RPM), gpu_fan_pct, case_fans [(name, rpm)], error"""
+    """返回 dict: cpu_temp, gpu_temp (℃), cpu_fan, gpu_fan (RPM), gpu_fan_pct, case_fans [(name, rpm)], extra_temps [(类别, 名称, ℃)], error"""
     r = {"cpu_temp": None, "gpu_temp": None, "cpu_fan": None, "gpu_fan": None,
-         "gpu_fan_pct": None, "case_fans": [], "error": None}
+         "gpu_fan_pct": None, "case_fans": [], "extra_temps": [], "error": None}
     try:
         d = _lhm()
         r["cpu_temp"] = _pick_temp(d["temps"], "cpu", ["package", "tctl", "tdie", "average"])
         r["gpu_temp"] = _pick_temp(d["temps"], "gpu", ["core"])
+        order = list(_EXTRA_KINDS)
+        r["extra_temps"] = sorted(((k, n, v) for (k, n), v in d["extra"].items()),
+                                  key=lambda x: order.index(x[0]))
         gpu_fans = [v for k, _, v in d["fans"] if k == "gpu"]
         r["gpu_fan"] = max(gpu_fans) if gpu_fans else None
         for k, name, v in d["fans"]:

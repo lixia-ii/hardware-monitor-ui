@@ -17,7 +17,17 @@
    - 关闭监控窗口时,会一并关闭由 `start.bat` 启动的 LibreHardwareMonitor。
 2. 需要已安装 Python 3(仅用标准库,无需安装依赖)。
 
+## 首次运行的 PawnIO 提示
+
+首次启动会弹出 `PawnIO is not installed, do you want to install it?`,随后还有一个 `PawnIO Setup` 英文免责声明。
+
+- **这是什么**:PawnIO 是 LibreHardwareMonitor 使用的开源驱动,用来读取 CPU 温度和主板风扇转速,不装这两项就读不到。英文免责声明是开源软件的通用条款("按现状提供,风险自负")。
+- **怎么做**:两个窗口都点 **确定**,出现 UAC 提示选 **是**。只需装一次。
+- **装完仍读不到**:关闭 LibreHardwareMonitor 后重新运行 `start.bat`;若还不行,检查 Windows 安全中心的"内存完整性"是否拦截了驱动。
+
 ## 注意
+
+- 监控窗口提示"未连接 LibreHardwareMonitor"时,在 LibreHardwareMonitor 里勾选 **Options → Remote Web Server → Run**(压缩包内已预置开启,自行替换版本后需手动勾选)。
 
 - 读取 CPU 温度和风扇转速需要管理员权限,这是 LibreHardwareMonitor 的要求。
 - 未连接 LibreHardwareMonitor 时,显卡温度和风扇百分比会由 `nvidia-smi` 兜底(仅 NVIDIA)。
@@ -33,6 +43,7 @@ README.md
 app/
   monitor.py             界面
   sensors.py             读取 LibreHardwareMonitor 数据
+  hwinfo.py              读取型号/系统/处理器等硬件概览
   app.ico                窗口图标
   make_icon.py           重新生成图标
 LibreHardwareMonitor.zip 第三方程序压缩包(见上文链接)
