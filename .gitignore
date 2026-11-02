@@ -1,0 +1,4 @@
+__pycache__/
+*.pyc
+# 运行时由 LibreHardwareMonitor.zip 自动解压
+LibreHardwareMonitor/
