@@ -1,5 +1,6 @@
-"""硬件监控: 实时显示 CPU/GPU 温度与风扇转速。"""
+"""硬件监控: 实时显示 CPU/GPU 温度、利用率、内存/显存占用、风扇转速与网速。"""
 import ctypes
+import json
 import os
 import re
 import subprocess
@@ -9,11 +10,15 @@ import time
 import tkinter as tk
 from tkinter import ttk
 
+import autostart
 import hwinfo
 import sensors
+import tray
 
 INTERVAL = 1.0  # 两次读取的最短间隔 (秒)
 ICON = os.path.join(os.path.dirname(os.path.abspath(__file__)), "app.ico")
+SETTINGS = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "settings.json")
+CLOSE_CHOICES = (("ask", "每次询问"), ("tray", "最小化到托盘"), ("exit", "直接退出"))
 
 
 # 深色配色
@@ -23,6 +28,7 @@ BORDER = "#2c3039"
 TRACK = "#2f333d"
 FG = "#e6e8ee"
 MUTED = "#8a90a0"
+SUB = "#b4b9c5"  # 行名称: 比数值暗、比分组标题亮, 拉开层次
 RED = "#f87171"
 PIN = "#1e3a5f"  # 置顶按钮开启时的底色
 CHIP_HOVER = "#3a3f4b"
@@ -31,6 +37,50 @@ ERR_BG = "#2a1d21"  # 错误提示条
 ERR_BORDER = "#4a2a2f"
 FONT = "Microsoft YaHei UI"
 NUM = "Segoe UI"  # 数字等宽, 跳动时不抖
+
+
+def grayscale_text():
+    """Tk 建字体固定用 DEFAULT_QUALITY, 跟随系统的 ClearType: 深色底上浅色字两侧会有红蓝彩边, 看着像重影。
+    改写 tk86t.dll 导入表里的 CreateFontIndirectW, 把字体质量换成灰度抗锯齿 (只影响本程序)。须在 tk.Tk() 之前调用。"""
+    from ctypes import wintypes as wt
+    k32, gdi = ctypes.WinDLL("kernel32"), ctypes.WinDLL("gdi32")
+    k32.GetModuleHandleW.restype = ctypes.c_void_p
+    k32.GetModuleHandleW.argtypes = [wt.LPCWSTR]
+    k32.VirtualProtect.argtypes = [ctypes.c_void_p, ctypes.c_size_t, wt.DWORD, ctypes.POINTER(wt.DWORD)]
+    real = ctypes.WINFUNCTYPE(ctypes.c_void_p, ctypes.c_void_p)(("CreateFontIndirectW", gdi))
+    base = k32.GetModuleHandleW("tk86t.dll")
+    if not base:
+        return
+
+    def u32(off):
+        return ctypes.c_uint32.from_address(base + off).value
+
+    nt = u32(0x3C)
+    imports = u32(nt + 24 + (112 if ctypes.sizeof(ctypes.c_void_p) == 8 else 96) + 8)  # 数据目录 [1]: 导入表
+    ptr = ctypes.sizeof(ctypes.c_void_p)
+    while imports and u32(imports + 12):
+        if ctypes.string_at(base + u32(imports + 12)).lower() == b"gdi32.dll":
+            names, slots = u32(imports), u32(imports + 16)
+            for i in range(10000):
+                entry = ctypes.c_size_t.from_address(base + names + i * ptr).value
+                if not entry:
+                    break
+                if entry >> (ptr * 8 - 1) or ctypes.string_at(base + entry + 2) != b"CreateFontIndirectW":
+                    continue  # 按序号导入的或别的函数
+
+                @ctypes.WINFUNCTYPE(ctypes.c_void_p, ctypes.c_void_p)
+                def hook(logfont):
+                    lf = ctypes.create_string_buffer(ctypes.string_at(logfont, 92), 92)  # sizeof(LOGFONTW)
+                    if lf[26] == b"\x00":  # lfQuality: DEFAULT_QUALITY -> ANTIALIASED_QUALITY
+                        lf[26] = b"\x04"
+                    return real(lf)
+                grayscale_text.hook = hook  # 保持引用, 否则回调被回收
+                slot, old = base + slots + i * ptr, wt.DWORD()
+                if k32.VirtualProtect(slot, ptr, 0x04, ctypes.byref(old)):  # PAGE_READWRITE
+                    ctypes.c_void_p.from_address(slot).value = ctypes.cast(hook, ctypes.c_void_p).value
+                    k32.VirtualProtect(slot, ptr, old.value, ctypes.byref(old))
+                return
+        imports += 20
 
 
 def set_icon(win):
@@ -47,10 +97,49 @@ def set_icon(win):
         pass
 
 
+def load_settings():
+    try:
+        with open(SETTINGS, encoding="utf-8") as f:
+            return json.load(f)
+    except (OSError, ValueError):
+        return {}
+
+
+def save_settings(settings):
+    try:
+        with open(SETTINGS, "w", encoding="utf-8") as f:
+            json.dump(settings, f, ensure_ascii=False, indent=2)
+    except OSError:
+        pass
+
+
 def short_gpu(name):
     """显卡名去掉厂商前缀等, 放进小标签: "NVIDIA GeForce RTX 4060" -> "RTX 4060", "Intel(R) UHD Graphics 770" -> "UHD 770"。"""
     s = re.sub(r"\((?:R|TM)\)|\b(?:NVIDIA|AMD|Intel|GeForce|Graphics)\b|\bRadeon\s+(?=RX\b)", " ", name, flags=re.I)
     return " ".join(s.split()) or name
+
+
+def fmt_rate(b):
+    """字节/秒 -> (数字, 单位, 单位颜色), 如 ("12.5", "MB/s", FG)。数到 1000 进一级, 数字最多三位。
+    单位按量级变色, 扫一眼就知道大概多快: B/KB 灰 (基本空闲), MB 白, 50 MB/s 以上青, GB 橙。"""
+    if b is None:
+        return "--", "", MUTED
+    for unit in ("B/s", "KB/s", "MB/s"):
+        if b < 1000:
+            num = f"{b:.1f}" if b < 10 and unit != "B/s" else f"{b:.0f}"
+            color = FG if unit == "MB/s" else MUTED
+            if unit == "MB/s" and b >= 50:
+                color = "#22d3ee"
+            return num, unit, color
+        b /= 1024
+    return f"{b:.1f}", "GB/s", "#fb923c"
+
+
+def fmt_gb(used, total):
+    """已用/总量 (字节) -> "2.4/8.0 GB"。"""
+    if used is None or not total:
+        return ""
+    return f"{used / 1024 ** 3:.1f}/{total / 1024 ** 3:.1f} GB"
 
 
 def temp_color(t):
@@ -59,9 +148,65 @@ def temp_color(t):
     return "#4ade80" if t < 60 else "#fbbf24" if t < 80 else RED
 
 
+def _rgb(c):
+    return tuple(int(c[i:i + 2], 16) for i in (1, 3, 5))
+
+
+def check_png(size, gap, fill, border, check=None):
+    """画勾选框图标, 返回 PNG 字节: 圆角方框 + 可选的对号, 右侧留 gap 像素透明间距。
+    clam 主题自带的勾选标记是 ×, 只能换成图片; 不依赖 Pillow, 4x4 超采样抗锯齿后用 zlib 手写 PNG。"""
+    import struct
+    import zlib
+    fill, border = _rgb(fill), _rgb(border)
+    check = check and _rgb(check)
+    radius, bw, cw = size * 0.2, max(1.0, size / 14), size * 0.13  # 圆角半径、边框宽、对号笔画半宽
+    pts = [(size * 0.26, size * 0.52), (size * 0.44, size * 0.70), (size * 0.76, size * 0.33)]
+
+    def seg_dist(px, py, a, b):
+        (ax, ay), (bx, by) = a, b
+        dx, dy = bx - ax, by - ay
+        t = max(0.0, min(1.0, ((px - ax) * dx + (py - ay) * dy) / (dx * dx + dy * dy)))
+        return ((px - ax - t * dx) ** 2 + (py - ay - t * dy) ** 2) ** 0.5
+
+    def sample(x, y):
+        # 圆角矩形的有向距离: 负数在内部
+        qx, qy = abs(x - size / 2) - (size / 2 - radius), abs(y - size / 2) - (size / 2 - radius)
+        d = (max(qx, 0) ** 2 + max(qy, 0) ** 2) ** 0.5 + min(max(qx, qy), 0) - radius
+        if d > 0:
+            return None
+        if check and min(seg_dist(x, y, pts[0], pts[1]), seg_dist(x, y, pts[1], pts[2])) < cw:
+            return check
+        return border if d > -bw else fill
+
+    n = 4
+    rows = []
+    for py in range(size):
+        row = bytearray(b"\x00")  # 每行前的过滤类型字节
+        for px in range(size + gap):
+            acc, hit = [0, 0, 0], 0
+            for sy in range(n):
+                for sx in range(n):
+                    c = sample(px + (sx + 0.5) / n, py + (sy + 0.5) / n) if px < size else None
+                    if c:
+                        hit += 1
+                        acc = [a + v for a, v in zip(acc, c)]
+            row += bytes([a // hit for a in acc] + [255 * hit // (n * n)]) if hit else b"\x00\x00\x00\x00"
+        rows.append(bytes(row))
+
+    def chunk(tag, data):
+        return struct.pack(">I", len(data)) + tag + data + struct.pack(">I", zlib.crc32(tag + data))
+    return (b"\x89PNG\r\n\x1a\n" + chunk(b"IHDR", struct.pack(">IIBBBBB", size + gap, size, 8, 6, 0, 0, 0))
+            + chunk(b"IDAT", zlib.compress(b"".join(rows))) + chunk(b"IEND", b""))
+
+
 class App:
     def __init__(self):
         self.root = r = tk.Tk()
+        # 开机自启 (计划任务带 --autostart) 时直接待在托盘, 不弹窗口
+        self.hidden_start = "--autostart" in sys.argv
+        if self.hidden_start:
+            r.withdraw()
+        self.settings = load_settings()
         r.title("硬件监控")
         r.configure(bg=BG)
         r.minsize(r.winfo_pixels("300p"), 0)  # 尺寸用点 (p) 而非像素, 高 DPI 下按比例放大
@@ -75,13 +220,28 @@ class App:
         self.bars = {}
         self._devices(main)
 
+        # 网卡实时网速 (所有物理网卡之和): 只有两个数, 直接放在标题行右侧, 整张卡片只占一行
+        self.net_box = self._card(main, "网络")
+        self.net_box.pack_forget()
+        self.net_vals = {}
+        head = self.net_box.head
+        for key, arrow in (("net_up", "↑"), ("net_down", "↓")):  # 从右往左排
+            # 单位小字、随量级变色, 数字粗体; 各自定宽, 位数或单位变化时不跳
+            unit = tk.Label(head, text="", bg=CARD, fg=MUTED, font=(NUM, 8, "bold"), width=4, anchor="w")
+            unit.pack(side="right", anchor="s", pady=(0, "1p"))
+            num = tk.Label(head, text="--", bg=CARD, fg=MUTED, font=(NUM, 11, "bold"), width=4, anchor="e")
+            num.pack(side="right", padx=(0, "2p"))
+            tk.Label(head, text=arrow, bg=CARD, fg=MUTED, font=(FONT, 9)).pack(
+                side="right", padx=("10p" if key == "net_down" else "6p", 0))
+            self.net_vals[key] = (num, unit)
+
         self.case_box = self._card(main, "机箱风扇")
 
         # 水冷泵: 只有检测到时才显示, 插在机箱风扇下面
         self.pump_box = self._card(main, "水冷泵")
 
-        # 硬盘 / 内存 / 网卡各一项, 可点击标题收起或展开
-        self.extra_boxes = {k: self._card(main, f"{label}温度", collapsible=True)
+        # 硬盘 / 内存 / 网卡各一项, 可点击标题收起或展开 (记住上次的状态)
+        self.extra_boxes = {k: self._card(main, f"{label}温度", collapse_key=k)
                             for k, label in sensors.EXTRA_LABELS.items()}
 
         self.footer = tk.Frame(main, bg=BG)
@@ -105,13 +265,25 @@ class App:
         # 窗口置顶开关 (原生标题栏放不了按钮, 放在底栏), 开启时高亮
         self.pin_btn = ttk.Button(self.btn_bar, text="置顶", command=self.toggle_topmost, cursor="hand2")
         self.pin_btn.pack(side="right", padx=(0, "6p"))
+        ttk.Button(self.btn_bar, text="设置", command=self.show_settings, cursor="hand2").pack(side="left")
         # 可选分组: 没有数据就不显示。按此顺序排在底栏之前
-        self.optional = [b.master for b in (self.case_box, self.pump_box, *self.extra_boxes.values())]
+        self.optional = [b.master for b in (self.net_box, self.case_box, self.pump_box, *self.extra_boxes.values())]
         self.shown = ()
 
         # 仅当 LibreHardwareMonitor 由 start.bat 拉起时, 关闭本窗口才一并关闭它
         self.own_libre = "--own-libre" in sys.argv
         r.protocol("WM_DELETE_WINDOW", self.close)
+
+        # 托盘图标常驻; 点最小化时隐藏到托盘。托盘不可用 (极少见) 时保持普通的最小化和关闭即退出
+        self.tray = tray.Tray(ICON, "硬件监控")
+        if self.tray.ok:
+            # Tk 没有"最小化"事件, 只能监听 <Unmap>; 子控件的 Unmap 也会冒泡上来, 按 widget 过滤
+            r.bind("<Unmap>", lambda e: e.widget is r and r.state() == "iconic" and r.withdraw())
+        elif self.hidden_start:
+            r.iconify()
+        if self.hidden_start and not sensors.lhm_running():  # 开机自启时顺带拉起 LibreHardwareMonitor
+            self.launch_libre()
+        threading.Thread(target=autostart.sync, daemon=True).start()
 
         self.data = None
         self.launch_until = 0.0
@@ -140,6 +312,27 @@ class App:
                     lightcolor=PIN, darkcolor=PIN, focuscolor=PIN)
         hover = [("pressed", "#1a3354"), ("active", "#24466f")]
         s.map("On.TButton", background=hover, lightcolor=hover, darkcolor=hover)
+        for w in ("TCheckbutton", "TRadiobutton"):
+            # 单选框: clam 默认的圆圈只有十来个像素, 高 DPI 下太小; 边框调亮, 未选中时在深色底上也看得见 (勾选框见下面的自绘图标)
+            s.configure(w, background=BG, foreground=FG, indicatorbackground=CARD, indicatorforeground=FG,
+                        indicatorsize=self.root.winfo_pixels("9p"), indicatormargin=(0, 0, "5p", 0),
+                        upperbordercolor="#5a6070", lowerbordercolor="#5a6070", focuscolor=BG, padding=(0, "2p"))
+            s.map(w, background=[("active", BG)], indicatorbackground=[("selected", ACCENT), ("active", TRACK)],
+                  indicatorforeground=[("selected", "white")], foreground=[("disabled", MUTED)],
+                  upperbordercolor=[("selected", ACCENT)], lowerbordercolor=[("selected", ACCENT)])
+        s.configure("Hint.TLabel", foreground=MUTED)
+        # 勾选框换成自绘图标 (clam 自带的选中标记是 ×, 不是对号)
+        size, gap, border = self.root.winfo_pixels("9p"), self.root.winfo_pixels("5p"), "#5a6070"
+        img = lambda *a: tk.PhotoImage(data=check_png(size, gap, *a), format="png")
+        self._check_imgs = (img(CARD, border), img(ACCENT, ACCENT, "#ffffff"), img(TRACK, border),
+                            img(BG, BORDER), img(TRACK, TRACK, MUTED))  # 未选、选中、悬停、禁用、禁用且选中
+        off, on, hover, dis, dis_on = self._check_imgs
+        s.element_create("Check.indicator", "image", off, ("disabled", "selected", dis_on), ("disabled", dis),
+                         ("selected", on), ("active", hover))
+        s.layout("TCheckbutton", [("Checkbutton.padding", {"sticky": "nswe", "children": [
+            ("Check.indicator", {"side": "left", "sticky": ""}),
+            ("Checkbutton.focus", {"side": "left", "sticky": "w", "children": [
+                ("Checkbutton.label", {"sticky": "nswe"})]})]})])
         # 主操作按钮 (提示条里的"启动")
         s.configure("Accent.TButton", background=ACCENT, foreground="white", bordercolor=ACCENT,
                     lightcolor=ACCENT, darkcolor=ACCENT, focuscolor=ACCENT, anchor="center")
@@ -229,7 +422,131 @@ class App:
         y = (r.winfo_screenheight() - h) // 2
         r.geometry(f"+{max(x, 0)}+{max(y, 0)}")
 
+    def show_window(self):
+        r = self.root
+        r.deiconify()
+        r.state("normal")
+        r.lift()
+        r.focus_force()
+
+    def _dialog(self, title):
+        """深色模态小窗。返回 (窗口, 内容框架); 内容填好后调用 _show_dialog。"""
+        w = tk.Toplevel(self.root)
+        w.withdraw()  # 摆好位置再显示, 免得先在左上角闪一下
+        w.title(title)
+        w.configure(bg=BG)
+        w.resizable(False, False)
+        w.transient(self.root)
+        w.attributes("-topmost", self.root.attributes("-topmost"))
+        set_icon(w)
+        body = ttk.Frame(w, padding=("16p", "14p", "16p", "12p"))
+        body.pack(fill="both", expand=True)
+        w.bind("<Escape>", lambda _: w.destroy())
+        return w, body
+
+    def _show_dialog(self, w):
+        self.center_on_main(w)
+        w.deiconify()
+        w.grab_set()
+        w.focus_set()
+
     def close(self):
+        """点 x: 托盘可用时按设置最小化到托盘或退出, 没选过就询问。"""
+        action = self.settings.get("close_action", "ask") if self.tray.ok else "exit"
+        if action == "ask":
+            action = self._ask_close()
+        if action == "tray":
+            self.root.withdraw()
+        elif action == "exit":
+            self.quit()
+
+    def _ask_close(self):
+        """询问退出还是最小化到托盘。返回 "tray" / "exit", 取消返回 None。"""
+        w, body = self._dialog("关闭硬件监控")
+        result = []
+        remember = tk.BooleanVar(value=False)
+        ttk.Label(body, text="要退出程序, 还是最小化到托盘?", font=(FONT, 10)).pack(anchor="w")
+        ttk.Label(body, text="最小化后点击右下角托盘图标可恢复窗口。", style="Hint.TLabel").pack(
+            anchor="w", pady=("4p", "10p"))
+        ttk.Checkbutton(body, text="记住我的选择 (可在「设置」中修改)", variable=remember,
+                        cursor="hand2").pack(anchor="w", pady=(0, "12p"))
+        btns = ttk.Frame(body)
+        btns.pack(fill="x")
+
+        def choose(action):
+            result.append(action)
+            if remember.get():
+                self.settings["close_action"] = action
+                save_settings(self.settings)
+            w.destroy()
+        ttk.Button(btns, text="退出", style="Accent.TButton", command=lambda: choose("exit"),
+                   cursor="hand2").pack(side="right")
+        ttk.Button(btns, text="最小化到托盘", command=lambda: choose("tray"),
+                   cursor="hand2").pack(side="right", padx=(0, "6p"))
+        self._show_dialog(w)
+        w.wait_window()
+        return result[0] if result else None
+
+    def show_settings(self):
+        """设置: 点关闭按钮时的行为、开机自启。"""
+        if getattr(self, "settings_win", None) and self.settings_win.winfo_exists():
+            self.settings_win.lift()
+            return
+        w, body = self._dialog("设置")
+        self.settings_win = w
+        ttk.Label(body, text="点击关闭按钮时", font=(FONT, 9, "bold"), foreground=MUTED).pack(anchor="w")
+        close_var = tk.StringVar(value=self.settings.get("close_action", "ask"))
+
+        def set_close():
+            self.settings["close_action"] = close_var.get()
+            save_settings(self.settings)
+        for value, text in CLOSE_CHOICES:
+            ttk.Radiobutton(body, text=text, value=value, variable=close_var, command=set_close, cursor="hand2",
+                            state="normal" if self.tray.ok else "disabled").pack(anchor="w", padx=("8p", 0))
+
+        ttk.Label(body, text="启动", font=(FONT, 9, "bold"), foreground=MUTED).pack(anchor="w", pady=("12p", 0))
+        auto_var = tk.BooleanVar(value=False)
+        auto_cb = ttk.Checkbutton(body, text="开机自动启动 (最小化到托盘)", variable=auto_var, cursor="hand2",
+                                  state="disabled")  # 查到当前状态后才可点
+        auto_cb.pack(anchor="w", padx=("8p", 0))
+        ttk.Label(body, text="开启或关闭时需确认一次管理员权限, 之后开机不再弹出;\n会一并启动 LibreHardwareMonitor。",
+                  style="Hint.TLabel", justify="left").pack(anchor="w", padx=("8p", 0), pady=("2p", 0))
+        msg = ttk.Label(body, text="", style="Hint.TLabel")
+        msg.pack(anchor="w", pady=("8p", 0))
+
+        def run(job, done):
+            """schtasks 查询 / 等 UAC 会阻塞, 放后台线程; 结果回到主线程更新界面 (tkinter 非线程安全)。"""
+            result = []
+            threading.Thread(target=lambda: result.append(job()), daemon=True).start()
+
+            def wait():
+                if not w.winfo_exists():
+                    return
+                if result:
+                    done(result[0])
+                else:
+                    w.after(100, wait)
+            wait()
+
+        def loaded(on):
+            auto_var.set(on)
+            auto_cb.state(["!disabled"])
+
+        def toggled():
+            want = auto_var.get()
+            auto_cb.state(["disabled"])
+            msg.config(text="正在设置…")
+
+            def done(res):
+                msg.config(text=res[1])
+                run(autostart.is_enabled, loaded)  # 以实际状态为准, 失败或取消 UAC 时勾选框拨回去
+            run(lambda: autostart.set_enabled(want), done)
+        auto_cb.config(command=toggled)
+        run(autostart.is_enabled, loaded)
+        self._show_dialog(w)
+
+    def quit(self):
+        self.tray.destroy()
         if self.own_libre:
             self.root.withdraw()  # 等待 LibreHardwareMonitor 退出最多 3 秒, 先隐藏窗口免得看起来卡死
             self._stop_libre()
@@ -321,7 +638,7 @@ class App:
         wait()
 
     def _devices(self, parent):
-        """CPU / 显卡各一张卡片: 大字温度, 下面是利用率 (带进度条) 和风扇。"""
+        """CPU / 显卡各一张卡片: 大字温度, 下面是利用率、内存/显存占用 (带进度条) 和风扇。"""
         row = tk.Frame(parent, bg=BG)
         row.pack(fill="x")
         for i, (dev, name, accent) in enumerate((("cpu", "CPU", "#60a5fa"), ("gpu", "显卡", "#a78bfa"))):
@@ -339,20 +656,28 @@ class App:
                 chip.bind("<Enter>", lambda _: chip.config(bg=CHIP_HOVER))
                 chip.bind("<Leave>", lambda _: chip.config(bg=TRACK))
                 self.gpu_list = []
-            v = tk.Label(card, text="--", bg=CARD, fg=MUTED, font=(NUM, 24, "bold"))
-            v.pack(anchor="w")
-            self.values[f"{dev}_temp"] = v
-            for kind, title in (("load", "利用率"), ("fan", "风扇")):
+            temp = tk.Frame(card, bg=CARD)
+            temp.pack(anchor="w", pady=("2p", "2p"))
+            self.values[f"{dev}_temp"] = tk.Label(temp, text="--", bg=CARD, fg=MUTED, font=(NUM, 24, "bold"))
+            self.values[f"{dev}_temp"].pack(side="left")
+            # 单位用小字, 底部对齐到数字基线附近
+            self.values[f"{dev}_temp_unit"] = tk.Label(temp, text="°C", bg=CARD, fg=MUTED, font=(NUM, 12, "bold"))
+            self.values[f"{dev}_temp_unit"].pack(side="left", anchor="s", pady=(0, "6p"))
+            for kind, title in (("load", "利用率"), ("mem_load", "内存" if dev == "cpu" else "显存"), ("fan", "风扇")):
+                key = f"{dev}_{kind}" if dev == "gpu" or kind != "mem_load" else "mem_load"
                 f = tk.Frame(card, bg=CARD)
                 f.pack(fill="x", pady=("4p", 0))
-                tk.Label(f, text=title, bg=CARD, fg=MUTED, font=(FONT, 9)).pack(side="left")
-                self.values[f"{dev}_{kind}"] = self._value(f)
-                if kind == "load":
+                tk.Label(f, text=title, bg=CARD, fg=SUB, font=(FONT, 9)).pack(side="left")
+                self.values[key] = self._value(f)
+                if kind == "mem_load":  # 已用/总量, 小字放在百分比左边
+                    self.values[key + "_gb"] = tk.Label(f, text="", bg=CARD, fg=MUTED, font=(NUM, 8))
+                    self.values[key + "_gb"].pack(side="right", padx=(0, "4p"))
+                if kind != "fan":
                     track = tk.Frame(card, bg=TRACK, height="3p")
                     track.pack(fill="x", pady=("3p", 0))
                     bar = tk.Frame(track, bg=accent)
                     bar.rel = 0
-                    self.bars[dev] = bar
+                    self.bars[key] = bar
 
     def _next_gpu(self, _=None):
         ids = [h for h, _ in self.gpu_list]
@@ -378,26 +703,34 @@ class App:
         elif self.gpu_chip.winfo_manager():
             self.gpu_chip.pack_forget()
 
-    @staticmethod
-    def _card(parent, title, collapsible=False):
-        """分组卡片, 返回放内容的 body 框架 (body.master 是卡片本身)。collapsible: 点击标题收起/展开。"""
+    def _card(self, parent, title, collapse_key=None):
+        """分组卡片, 返回放内容的 body 框架 (body.master 是卡片本身)。
+        collapse_key: 点击标题收起/展开, 状态以此为键存进设置, 下次启动保持; 第一次默认展开。"""
         card = tk.Frame(parent, bg=CARD, padx="10p", pady="7p", highlightthickness=1, highlightbackground=BORDER)
         head = tk.Frame(card, bg=CARD)
         head.pack(fill="x")
         tk.Label(head, text=title, bg=CARD, fg=MUTED, font=(FONT, 9, "bold")).pack(side="left")
         body = tk.Frame(card, bg=CARD)
-        body.pack(fill="x", pady=("4p", 0))
-        if collapsible:
-            arrow = tk.Label(head, text="▾", bg=CARD, fg=MUTED, font=(FONT, 12))
+        body.head = head
+        collapsed = collapse_key in self.settings.get("collapsed", [])
+        if not collapsed:
+            body.pack(fill="x", pady=("4p", 0))
+        if collapse_key:
+            arrow = tk.Label(head, text="▸" if collapsed else "▾", bg=CARD, fg=MUTED, font=(FONT, 12))
             arrow.pack(side="right")
 
             def toggle(_=None):
+                keys = set(self.settings.get("collapsed", []))
                 if body.winfo_manager():
                     body.pack_forget()
                     arrow.config(text="▸")
+                    keys.add(collapse_key)
                 else:
                     body.pack(fill="x", pady=("4p", 0))
                     arrow.config(text="▾")
+                    keys.discard(collapse_key)
+                self.settings["collapsed"] = sorted(keys)
+                save_settings(self.settings)
             for w in (head, *head.winfo_children()):
                 w.config(cursor="hand2")
                 w.bind("<Button-1>", toggle)
@@ -410,8 +743,8 @@ class App:
         v.pack(side="right")
         return v
 
-    def _bar(self, dev, pct):
-        bar = self.bars[dev]
+    def _bar(self, key, pct):
+        bar = self.bars[key]
         rel = 0 if pct is None else max(0.0, min(pct, 100.0)) / 100
         if bar.rel != rel:
             bar.rel = rel
@@ -428,7 +761,21 @@ class App:
         finally:  # 无论如何都要复位, 否则界面会永远停在最后一次读数
             self.busy = False
 
+    def _tray_events(self):
+        """处理托盘点击。选了退出返回 False。"""
+        for ev in self.tray.poll():
+            if ev == "menu":
+                ev = self.tray.menu()
+            if ev == "show":
+                self.show_window()
+            elif ev == "quit":
+                self.quit()
+                return False
+        return True
+
     def tick(self):
+        if not self._tray_events():
+            return
         now = time.monotonic()
         if not self.busy and now - self.last_start >= INTERVAL:  # 后台线程读取, 避免卡界面
             self.busy = True
@@ -440,7 +787,7 @@ class App:
             if not self.centered:  # 首次渲染后分组数量确定, 窗口大小变了, 再居中一次
                 self.centered = True
                 self.center()
-        self.root.after(200, self.tick)
+        self.root.after(100, self.tick)  # 也负责响应托盘点击, 间隔不宜太长
 
     @staticmethod
     def _set(label, text, fg=None):
@@ -463,7 +810,7 @@ class App:
             for key, name, _, _ in rows:
                 f = tk.Frame(box, bg=CARD)
                 f.pack(fill="x", pady="1p")
-                tk.Label(f, text=name, bg=CARD, fg=FG, font=(FONT, 10)).pack(side="left")
+                tk.Label(f, text=name, bg=CARD, fg=SUB, font=(FONT, 9)).pack(side="left")
                 box._vals[key] = make_value(f)
         for key, _, text, color in rows:
             self._set(box._vals[key], text, color)
@@ -472,19 +819,27 @@ class App:
         self._update_gpu(d)
         for k in ("cpu_temp", "gpu_temp"):
             t = d[k]
-            self._set(self.values[k], "--" if t is None else f"{t:.0f} °C", temp_color(t))
-        for k in ("cpu_load", "gpu_load"):
+            self._set(self.values[k], "--" if t is None else f"{t:.0f}", temp_color(t))
+            self._set(self.values[k + "_unit"], "°C", temp_color(t))
+        for k in ("cpu_load", "gpu_load", "mem_load", "gpu_mem_load"):
             u = d[k]
-            self._set(self.values[k], "--" if u is None else f"{u:.0f} %")
-            self._bar(k[:3], u)
-        self._set(self.values["cpu_fan"], "--" if d["cpu_fan"] is None else f"{d['cpu_fan']:.0f} RPM")
+            self._set(self.values[k], "--" if u is None else f"{u:.0f} %", MUTED if u is None else FG)
+            self._bar(k, u)
+        for k, used, total in (("mem_load", "mem_used", "mem_total"), ("gpu_mem_load", "gpu_mem_used", "gpu_mem_total")):
+            self._set(self.values[k + "_gb"], fmt_gb(d[used], d[total]))
+        for k, (num, unit) in self.net_vals.items():
+            n, u, color = fmt_rate(d[k])
+            self._set(num, n, MUTED if d[k] is None else FG)  # 数字固定白色, 只有单位随量级变色
+            self._set(unit, u, color)
+        cpu_fan = d["cpu_fan"]
+        self._set(self.values["cpu_fan"], "--" if cpu_fan is None else f"{cpu_fan:.0f} RPM", MUTED if cpu_fan is None else FG)
         if d["gpu_fan"] is not None:
             gpu_fan = f"{d['gpu_fan']:.0f} RPM"
         elif d["gpu_fan_pct"] is not None:
             gpu_fan = f"{d['gpu_fan_pct']:.0f} %"
         else:
             gpu_fan = "--"
-        self._set(self.values["gpu_fan"], gpu_fan)
+        self._set(self.values["gpu_fan"], gpu_fan, MUTED if gpu_fan == "--" else FG)
 
         self._rows(self.case_box,
                    [((i, n), n, f"{rpm:.0f} RPM", FG if rpm else MUTED)
@@ -500,9 +855,11 @@ class App:
             self._rows(self.pump_box,
                        [((i, n), n, f"{rpm:.0f} RPM", None) for i, (n, rpm) in enumerate(pumps)],
                        "", self._value)
-        has = [bool(d["case_fans"]), bool(pumps)] + [any(e[0] == k for e in d["extra_temps"]) for k in self.extra_boxes]
+        has = [d["net_up"] is not None or d["net_down"] is not None, bool(d["case_fans"]), bool(pumps)] + [any(e[0] == k for e in d["extra_temps"]) for k in self.extra_boxes]
         self._layout(has)
         self._notice(d["error"], d["lhm_down"], d["lhm_running"])
+        temps = [f"{name} {d[k]:.0f}°C" for k, name in (("cpu_temp", "CPU"), ("gpu_temp", "显卡")) if d[k] is not None]
+        self.tray.set_tip("\n".join(["硬件监控", *temps]))  # 托盘悬停即可看温度, 不用打开窗口
 
     def _layout(self, has):
         """可选分组有数据才显示; 显示集合变化时按原顺序重新排列。"""
@@ -522,6 +879,13 @@ if __name__ == "__main__":
     ctypes.windll.shell32.SetCurrentProcessExplicitAppUserModelID("hwmonitor.fan.app")
     try:  # 声明 DPI 感知, 否则缩放 125%/150% 的屏幕上会被系统拉伸而发虚
         ctypes.windll.shcore.SetProcessDpiAwareness(1)
+    except Exception:
+        pass
+    if not tray.acquire_single_instance():  # 已在运行 (如开机自启后又双击了 start.bat): 唤出那个窗口后退出
+        sys.exit(0)
+    tray.dark_menus()
+    try:
+        grayscale_text()
     except Exception:
         pass
     App().root.mainloop()

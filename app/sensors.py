@@ -20,10 +20,22 @@ def _parse(value):
     return v
 
 
+_UNITS = {"b": 1, "kb": 1024, "mb": 1024 ** 2, "gb": 1024 ** 3, "tb": 1024 ** 4}
+
+
+def _bytes(value):
+    """"2388.0 MB" / "15.8 KB/s" 换算成字节 (或 字节/秒); 单位不认识返回 None。"""
+    m = re.match(r"\s*(-?\d+(?:[.,]\d+)?)\s*([kmgt]?b)\b", value or "", re.I)
+    if not m:
+        return None
+    return float(m.group(1).replace(",", ".")) * _UNITS[m.group(2).lower()]
+
+
 # 按 HardwareId 前缀判断硬件类别 (LibreHardwareMonitor 新版 data.json 的硬件节点都带这个字段)。
 # 如 /intelcpu/0, /gpu-nvidia/0, /gpu-intel-integrated/..., /lpc/nct6798d/0 (主板 SuperIO), /memory/dimm/0, /nvme/1, /nic/{...}
-# /ram 和 /vram 是内存/虚拟内存占用, 没有温度, 不归入 memory。
+# /ram 是内存占用 (单独归为 ram), /vram 是虚拟内存, 都没有温度, 不归入 memory。
 _HWID_KINDS = (
+    ("/ram", "ram"),
     ("/intelcpu", "cpu"), ("/amdcpu", "cpu"),
     ("/gpu", "gpu"),
     ("/motherboard", "board"), ("/lpc", "board"),
@@ -101,6 +113,10 @@ def _walk(node, kind, out, hw=None):
                 out["fans"].append((kind, text, v, hw))
             elif typ == "Load":
                 out["loads"].append((kind, text, v, hw))
+            elif typ in ("Data", "SmallData", "Throughput"):  # 内存/显存用量, 网速
+                b = _bytes(value)
+                if b is not None:
+                    out["data"].append((kind, text, b, hw))
             elif typ == "Temperature":
                 out["temps"].append((kind, text, v, hw))
                 if kind in _EXTRA_KINDS and hw is not None:
@@ -145,6 +161,34 @@ def _pick_temp(items, prefer):
     return max(v for _, v in items)
 
 
+def _gpu_mem(out, gpu):
+    """显卡显存 (已用, 总量) 字节。独显用 GPU Memory, 没有时退回 D3D 专用/共享显存 (核显只有共享显存)。"""
+    items = {n.lower(): v for k, n, v, h in out["data"] if k == "gpu" and h == gpu}
+    for p in ("gpu memory", "d3d dedicated memory", "d3d shared memory"):
+        used, total = items.get(p + " used"), items.get(p + " total")
+        if used is not None and total:
+            return used, total
+    return None
+
+
+# 虚拟网卡 (Hyper-V / WSL / 虚拟机 / VPN 等) 的流量会和物理网卡重复, 不计入网速
+_VIRTUAL_NIC = re.compile(r"virtual|vethernet|hyper-v|vmware|virtualbox|loopback|wsl|tap-|tunnel|bluetooth", re.I)
+
+
+def _net_speed(out):
+    """所有物理网卡的 (上传, 下载) 字节/秒之和; 没有网卡网速传感器返回 (None, None)。"""
+    up = down = None
+    for k, n, v, h in out["data"]:
+        if k != "network" or h is None or _VIRTUAL_NIC.search(out["hw"][h][0]):
+            continue
+        n = n.lower()
+        if "upload speed" in n:
+            up = (up or 0) + v
+        elif "download speed" in n:
+            down = (down or 0) + v
+    return up, down
+
+
 def _gpu_ids(out):
     return sorted({h for k, _, _, h in out["temps"] + out["fans"] + out["loads"] if k == "gpu" and h is not None})
 
@@ -173,7 +217,7 @@ def _lhm():
     with urllib.request.urlopen(LHM_URL, timeout=1.5) as r:
         raw = r.read()
     tree = json.loads(raw)
-    out = {"temps": [], "fans": [], "loads": [], "extra": {}, "hw": [], "by_id": b'"HardwareId"' in raw}
+    out = {"temps": [], "fans": [], "loads": [], "data": [], "extra": {}, "hw": [], "by_id": b'"HardwareId"' in raw}
     _walk(tree, None, out)
     return out
 
@@ -189,7 +233,7 @@ def _num(s):
 
 
 def _nvidia():
-    """nvidia-smi 兜底: 返回每块卡的 [(名称, 温度, 风扇%, 利用率%)]。结果缓存 5 秒, 避免每秒拉起一个进程。"""
+    """nvidia-smi 兜底: 返回每块卡的 [(名称, 温度, 风扇%, 利用率%, 显存已用, 显存总量 (字节))]。结果缓存 5 秒, 避免每秒拉起一个进程。"""
     global _nv_cache
     if time.monotonic() - _nv_cache[0] < 5:
         return _nv_cache[1]
@@ -198,12 +242,14 @@ def _nvidia():
     if exe:
         try:
             res = subprocess.run(
-                [exe, "--query-gpu=name,temperature.gpu,fan.speed,utilization.gpu", "--format=csv,noheader,nounits"],
+                [exe, "--query-gpu=name,temperature.gpu,fan.speed,utilization.gpu,memory.used,memory.total", "--format=csv,noheader,nounits"],
                 capture_output=True, text=True, timeout=2,
                 creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0))
             for line in res.stdout.strip().splitlines():
-                name, t, f, u = [x.strip() for x in line.rsplit(",", 3)]
-                result.append((name, _num(t), _num(f), _num(u)))
+                name, t, f, u, mu, mt = [x.strip() for x in line.rsplit(",", 5)]
+                mu, mt = _num(mu), _num(mt)  # 单位 MiB
+                result.append((name, _num(t), _num(f), _num(u),
+                               mu and mu * 1024 ** 2, mt and mt * 1024 ** 2))
         except Exception:
             pass
     _nv_cache = (time.monotonic(), result)
@@ -231,10 +277,12 @@ def lhm_running():
 
 
 def read(gpu_id=None):
-    """返回 dict: cpu_temp, gpu_temp (℃), cpu_fan, gpu_fan (RPM), cpu_load, gpu_load (%), gpus [(HardwareId, 名称)], gpu_id (当前显示的), gpu_fan_pct, case_fans [(name, rpm)],
+    """返回 dict: cpu_temp, gpu_temp (℃), cpu_fan, gpu_fan (RPM), cpu_load, gpu_load (%), gpus [(HardwareId, 名称)], gpu_id (当前显示的), gpu_fan_pct,
+    mem_load, gpu_mem_load (%), mem_used, mem_total, gpu_mem_used, gpu_mem_total, net_up, net_down (字节 / 字节每秒), case_fans [(name, rpm)],
     pumps [(name, rpm)], extra_temps [(类别, 名称, ℃)], error"""
     r = {"cpu_temp": None, "gpu_temp": None, "cpu_fan": None, "gpu_fan": None, "cpu_load": None, "gpu_load": None,
-         "gpu_fan_pct": None, "gpus": [], "gpu_id": None, "lhm_down": False, "lhm_running": False,
+         "gpu_fan_pct": None, "mem_load": None, "mem_used": None, "mem_total": None,
+         "gpu_mem_load": None, "gpu_mem_used": None, "gpu_mem_total": None, "net_up": None, "net_down": None, "gpus": [], "gpu_id": None, "lhm_down": False, "lhm_running": False,
          "case_fans": [], "pumps": [], "extra_temps": [], "error": None}
     gpu_name = None
     try:
@@ -248,6 +296,19 @@ def read(gpu_id=None):
         r["gpu_temp"] = _pick_temp([(n, v) for k, n, v, h in d["temps"] if k == "gpu" and h == gpu], ["core"])
         r["cpu_load"] = _pick_temp([(n, v) for k, n, v, _ in d["loads"] if k == "cpu"], ["total"])
         r["gpu_load"] = _pick_temp([(n, v) for k, n, v, h in d["loads"] if k == "gpu" and h == gpu], ["core"])
+        # 内存: 旧版没有 HardwareId 时内存节点被归为 memory, 用名称 "Memory" 区分出总占用
+        r["mem_load"] = next((v for k, n, v, _ in d["loads"] if k in ("ram", "memory") and n.lower() == "memory"), None)
+        mem = {n.lower(): v for k, n, v, _ in d["data"] if k in ("ram", "memory")}
+        used, avail = mem.get("memory used"), mem.get("memory available")
+        if used is not None and avail is not None:
+            r["mem_used"], r["mem_total"] = used, used + avail
+            if r["mem_load"] is None and used + avail:
+                r["mem_load"] = used / (used + avail) * 100
+        vram = _gpu_mem(d, gpu)
+        if vram:
+            r["gpu_mem_used"], r["gpu_mem_total"] = vram
+            r["gpu_mem_load"] = vram[0] / vram[1] * 100
+        r["net_up"], r["net_down"] = _net_speed(d)
         gpu_fans = [v for k, _, v, h in d["fans"] if k == "gpu" and h == gpu]
         r["gpu_fan"] = max(gpu_fans) if gpu_fans else None
         order = list(_EXTRA_KINDS)
@@ -273,13 +334,16 @@ def read(gpu_id=None):
 
     if r["lhm_down"]:
         r["lhm_running"] = lhm_running()
-    if r["gpu_temp"] is None or r["gpu_fan"] is None or r["gpu_load"] is None:
+    if None in (r["gpu_temp"], r["gpu_fan"], r["gpu_load"], r["gpu_mem_load"]):
         nv = _nvidia_for(gpu_name)
         if nv:
             if r["gpu_temp"] is None:
                 r["gpu_temp"] = nv[1]
             if r["gpu_load"] is None:
                 r["gpu_load"] = nv[3]
+            if r["gpu_mem_load"] is None and nv[4] is not None and nv[5]:
+                r["gpu_mem_used"], r["gpu_mem_total"] = nv[4], nv[5]
+                r["gpu_mem_load"] = nv[4] / nv[5] * 100
             r["gpu_fan_pct"] = nv[2]  # nvidia-smi 只给百分比
     return r
 

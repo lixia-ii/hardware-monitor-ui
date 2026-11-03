@@ -1,6 +1,6 @@
 # 硬件监控界面
 
-一个简单的 Windows 桌面界面,实时显示 CPU 温度、显卡温度、CPU 风扇、显卡风扇、机箱(主板)风扇转速。
+一个简单的 Windows 桌面界面,实时显示 CPU/显卡的温度、利用率、内存/显存占用,网卡实时上传/下载速度,以及 CPU 风扇、显卡风扇、机箱(主板)风扇转速。
 
 ## 说明
 
@@ -15,7 +15,9 @@
    - 如果当前目录下没有 `LibreHardwareMonitor/`,会先从 Releases 自动下载 `LibreHardwareMonitor.zip` 并解压(下载失败时按提示手动下载,放到 `start.bat` 同目录即可)(压缩包内已预置:开启 Web Server、启动最小化到托盘,仅监听 127.0.0.1);
    - 如果 LibreHardwareMonitor 没在运行,会自动最小化启动它;
    - 关闭监控窗口时,会一并关闭由 `start.bat` 启动的 LibreHardwareMonitor。
-2. 需要已安装 Python 3(运行监控界面仅用标准库,无需安装依赖;仅重新生成图标的 `make_icon.py` 需要 Pillow)。
+2. 最小化窗口会隐藏到右下角托盘;单击托盘图标恢复窗口,右键可退出,鼠标悬停可直接看 CPU/显卡温度。点关闭按钮时默认询问"退出"还是"最小化到托盘",可勾选记住,之后在底栏 **设置** 里修改。程序只允许运行一个,重复启动会唤出已打开的窗口。
+3. **设置 → 开机自动启动**:登录后自动在托盘运行,并一并启动 LibreHardwareMonitor。通过任务计划程序(任务名 `HardwareMonitorUI`,以最高权限运行)实现,开启或关闭时确认一次 UAC,之后开机不再弹出。移动程序目录后,下次启动会自动修正任务里的路径。
+4. 需要已安装 Python 3(运行监控界面仅用标准库,无需安装依赖;仅重新生成图标的 `make_icon.py` 需要 Pillow)。
 
 ## 首次运行的 PawnIO 提示
 
@@ -29,7 +31,8 @@
 
 - 监控窗口提示"未连接 LibreHardwareMonitor"时,在 LibreHardwareMonitor 里勾选 **Options → Remote Web Server → Run**(压缩包内已预置开启,自行替换版本后需手动勾选)。
 - 读取 CPU 温度和风扇转速需要管理员权限,这是 LibreHardwareMonitor 的要求。
-- 未连接 LibreHardwareMonitor 时,显卡温度和风扇百分比会由 `nvidia-smi` 兜底(仅 NVIDIA)。
+- 未连接 LibreHardwareMonitor 时,显卡温度、利用率、显存占用和风扇百分比会由 `nvidia-smi` 兜底(仅 NVIDIA)。
+- 网速是所有物理网卡的上传/下载之和,Hyper-V、WSL、虚拟机、VPN 等虚拟网卡不计入,避免重复统计。
 - 能显示哪些风扇,取决于主板是否被 LibreHardwareMonitor 识别。部分品牌机(OEM 主板)没有风扇传感器,CPU 风扇和机箱风扇会显示为空。
 - 硬盘/内存/网卡温度会自动排除厂商的告警、临界阈值,只显示当前温度。
 - 多块显卡时优先显示独显的温度和风扇,核显不参与。
@@ -46,10 +49,13 @@ start.bat                双击启动
 README.md
 app/
   monitor.py             界面
+  tray.py                托盘图标、单实例
+  autostart.py           开机自启 (计划任务)
   sensors.py             读取 LibreHardwareMonitor 数据
   hwinfo.py              读取型号/系统/处理器等硬件概览
   app.ico                窗口图标
   make_icon.py           重新生成图标
+settings.json            本地设置(关闭按钮行为、分组收起状态),已被 git 忽略
 LICENSE                  本项目许可证(MIT)
 THIRD_PARTY/             第三方许可证
 LibreHardwareMonitor.zip 首次启动时从 Releases 下载,已被 git 忽略
