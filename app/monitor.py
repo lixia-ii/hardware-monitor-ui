@@ -691,13 +691,15 @@ class App:
     def _show_gpu(self, hwid):
         self.gpu_cur = hwid
         name = next((n for h, n in self.gpu_list if h == hwid), "")
-        self._set(self.gpu_chip, f"{short_gpu(name)}  ⇄")
+        multi = len(self.gpu_list) > 1  # 只有一块时只显示型号, 不带切换箭头
+        self._set(self.gpu_chip, f"{short_gpu(name)}  ⇄" if multi else short_gpu(name))
+        self.gpu_chip.config(cursor="hand2" if multi else "")
 
     def _update_gpu(self, d):
-        """多块显卡时显示切换标签, 只有一块 (或没有) 就隐藏。"""
+        """显示显卡型号标签: 多块时可点击切换, 一块时只显示型号, 没有显卡就隐藏。"""
         self.gpu_list = d["gpus"]
-        if len(self.gpu_list) > 1:
-            self._show_gpu(d["gpu_id"])
+        if self.gpu_list:
+            self._show_gpu(d["gpu_id"] if d["gpu_id"] else self.gpu_list[0][0])
             if not self.gpu_chip.winfo_manager():
                 self.gpu_chip.pack(side="right")
         elif self.gpu_chip.winfo_manager():
@@ -877,10 +879,20 @@ class App:
 if __name__ == "__main__":
     # 独立的任务栏标识, 否则任务栏会归到 pythonw 并显示 Python 图标
     ctypes.windll.shell32.SetCurrentProcessExplicitAppUserModelID("hwmonitor.fan.app")
-    try:  # 声明 DPI 感知, 否则缩放 125%/150% 的屏幕上会被系统拉伸而发虚
-        ctypes.windll.shcore.SetProcessDpiAwareness(1)
+    # 声明 DPI 感知, 否则缩放 125%/150% 的屏幕上会被系统拉伸而发虚。
+    # 开机自启时进程在登录早期启动, 系统级感知 (1) 取到的可能是未就绪的 DPI (如 96), 之后被拉伸; 优先用 per-monitor v2, 按显示器实际 DPI。
+    try:
+        ok = ctypes.windll.user32.SetProcessDpiAwarenessContext(ctypes.c_void_p(-4))
     except Exception:
-        pass
+        ok = False
+    if not ok:
+        try:
+            ctypes.windll.shcore.SetProcessDpiAwareness(2)
+        except Exception:
+            try:
+                ctypes.windll.shcore.SetProcessDpiAwareness(1)
+            except Exception:
+                pass
     if not tray.acquire_single_instance():  # 已在运行 (如开机自启后又双击了 start.bat): 唤出那个窗口后退出
         sys.exit(0)
     tray.dark_menus()
