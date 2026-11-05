@@ -51,8 +51,9 @@ def _xml():
 def _query_xml():
     """读取已注册任务的 XML; 没有该任务返回 None。"""
     try:
-        r = subprocess.run(["schtasks", "/Query", "/TN", TASK, "/XML"], capture_output=True, creationflags=_NO_WINDOW)
-    except OSError:
+        r = subprocess.run(["schtasks", "/Query", "/TN", TASK, "/XML"], capture_output=True,
+                           creationflags=_NO_WINDOW, timeout=10)
+    except (OSError, subprocess.TimeoutExpired):
         return None
     if r.returncode:
         return None
@@ -66,14 +67,22 @@ def is_enabled():
 
 def _schtasks(args):
     """运行 schtasks, 返回退出码。已是管理员直接运行; 否则经 UAC 提权运行 (取消 UAC 返回非 0)。会阻塞, 放后台线程调用。"""
+    try:
+        return _run_schtasks(args)
+    except (OSError, subprocess.TimeoutExpired):
+        return 1
+
+
+def _run_schtasks(args):
     if ctypes.windll.shell32.IsUserAnAdmin():
-        return subprocess.run(["schtasks", *args], capture_output=True, creationflags=_NO_WINDOW).returncode
+        return subprocess.run(["schtasks", *args], capture_output=True, creationflags=_NO_WINDOW, timeout=30).returncode
     # 参数经环境变量传入, 路径里的引号等字符不会破坏 PowerShell 语句
     env = dict(os.environ, ST_ARGS=subprocess.list2cmdline(args))
     ps = ("try { $p = Start-Process schtasks -ArgumentList $env:ST_ARGS -Verb RunAs -WindowStyle Hidden -Wait -PassThru;"
           " exit $p.ExitCode } catch { exit 1223 }")
+    # UAC 弹窗等用户确认, 超时给足
     return subprocess.run(["powershell", "-NoProfile", "-Command", ps], env=env,
-                          capture_output=True, creationflags=_NO_WINDOW).returncode
+                          capture_output=True, creationflags=_NO_WINDOW, timeout=120).returncode
 
 
 def enable():

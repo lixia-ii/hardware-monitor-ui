@@ -26,6 +26,16 @@ if not exist "%ZIP%" (
   pause
   exit /b 1
 )
+rem Validate the downloaded/cached archive before extraction, including the expected executable entry.
+powershell -NoProfile -Command "try { Add-Type -AssemblyName System.IO.Compression.FileSystem; $z = [IO.Compression.ZipFile]::OpenRead($env:ZIP); try { if (-not ($z.Entries | Where-Object { $_.FullName -match '^LibreHardwareMonitor[\\/]LibreHardwareMonitor\.exe$' })) { exit 2 } } finally { $z.Dispose() } } catch { exit 1 }"
+if errorlevel 1 (
+  echo.
+  echo LibreHardwareMonitor.zip is invalid or incomplete and has been deleted.
+  echo Run start.bat again to download it again.
+  del "%ZIP%" 2>nul
+  pause
+  exit /b 1
+)
 echo Extracting LibreHardwareMonitor.zip ...
 powershell -NoProfile -Command "Expand-Archive -LiteralPath $env:ZIP -DestinationPath $env:DEST -Force"
 if not exist "%~dp0LibreHardwareMonitor\LibreHardwareMonitor.exe" (

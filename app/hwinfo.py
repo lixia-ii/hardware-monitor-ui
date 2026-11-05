@@ -75,7 +75,7 @@ def _nvidia_vram():
             name, mib = line.rsplit(",", 1)
             out[name.strip()] = int(float(mib)) * 1024 ** 2
         return out
-    except Exception:
+    except (OSError, subprocess.SubprocessError, ValueError):
         return {}
 
 
@@ -165,7 +165,7 @@ def load():
             capture_output=True, timeout=30,
             creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0))
         d = json.loads(res.stdout.decode("utf-8", "replace"))
-    except Exception as e:
+    except (OSError, subprocess.SubprocessError, ValueError) as e:  # ValueError 含 JSON 解析失败
         return {"error": f"读取失败: {e}"}
 
     try:

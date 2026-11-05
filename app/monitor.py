@@ -546,6 +546,7 @@ class App:
         self._show_dialog(w)
 
     def quit(self):
+        self.closing = True
         self.tray.destroy()
         if self.own_libre:
             self.root.withdraw()  # 等待 LibreHardwareMonitor 退出最多 3 秒, 先隐藏窗口免得看起来卡死
@@ -556,15 +557,20 @@ class App:
     def _stop_libre():
         """先正常关闭, 让 LibreHardwareMonitor 自己做退出清理 (如把风扇控制交还主板); 超时才强杀。"""
         flags = subprocess.CREATE_NO_WINDOW
-        subprocess.run(["taskkill", "/IM", "LibreHardwareMonitor.exe"], capture_output=True, creationflags=flags)
+
+        def run(*cmd):
+            try:
+                return subprocess.run(cmd, capture_output=True, text=True, creationflags=flags, timeout=3).stdout
+            except (OSError, subprocess.SubprocessError):
+                return None  # 命令失败或超时, 退出流程不能被它卡住
+
+        run("taskkill", "/IM", "LibreHardwareMonitor.exe")  # 失败也继续轮询, 最后仍会强杀
         for _ in range(15):
             time.sleep(0.2)
-            alive = subprocess.run(["tasklist", "/fi", "imagename eq LibreHardwareMonitor.exe"],
-                                   capture_output=True, text=True, creationflags=flags).stdout
-            if "LibreHardwareMonitor.exe" not in alive:
+            alive = run("tasklist", "/fi", "imagename eq LibreHardwareMonitor.exe")
+            if alive is not None and "LibreHardwareMonitor.exe" not in alive:
                 return
-        subprocess.run(["taskkill", "/F", "/IM", "LibreHardwareMonitor.exe"],
-                       capture_output=True, creationflags=flags)
+        run("taskkill", "/F", "/IM", "LibreHardwareMonitor.exe")
 
     def show_info(self):
         """打开硬件信息窗口 (已打开则置前)。信息在后台线程读取, 避免卡界面。"""
@@ -776,6 +782,8 @@ class App:
         return True
 
     def tick(self):
+        if getattr(self, "closing", False):
+            return
         if not self._tray_events():
             return
         now = time.monotonic()

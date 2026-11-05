@@ -250,7 +250,7 @@ def _nvidia():
                 mu, mt = _num(mu), _num(mt)  # 单位 MiB
                 result.append((name, _num(t), _num(f), _num(u),
                                mu and mu * 1024 ** 2, mt and mt * 1024 ** 2))
-        except Exception:
+        except (OSError, subprocess.SubprocessError, ValueError):
             pass
     _nv_cache = (time.monotonic(), result)
     return result
@@ -272,7 +272,7 @@ def lhm_running():
                              capture_output=True, text=True, timeout=3,
                              creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0)).stdout
         return "LibreHardwareMonitor.exe" in out
-    except Exception:
+    except (OSError, subprocess.SubprocessError):
         return False
 
 
