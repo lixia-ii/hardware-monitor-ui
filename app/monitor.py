@@ -214,7 +214,10 @@ class App:
         self.settings = load_settings()
         r.title("硬件监控")
         r.configure(bg=BG)
-        r.minsize(r.winfo_pixels("300p"), 0)  # 尺寸用点 (p) 而非像素, 高 DPI 下按比例放大
+        # 尺寸用点 (p) 而非像素, 高 DPI 下按比例放大。完整界面建好后还会
+        # 按实际内容补齐最小高度，避免把窗口缩到卡片或底栏看不见。
+        r.minsize(r.winfo_pixels("300p"), r.winfo_pixels("220p"))
+        r.resizable(True, True)  # 双向可调；最小尺寸由当前可见内容保证，不能把卡片或底栏拉没
         self._style()
         set_icon(r)
 
@@ -309,6 +312,7 @@ class App:
         if self.settings.get("floating", {}).get("enabled"):
             self.show_floating()
         self.centered = False
+        self._update_main_minimum()
         self.center()
         self.tick()
 
@@ -337,6 +341,14 @@ class App:
                   indicatorforeground=[("selected", "white")], foreground=[("disabled", MUTED)],
                   upperbordercolor=[("selected", ACCENT)], lowerbordercolor=[("selected", ACCENT)])
         s.configure("Hint.TLabel", foreground=MUTED)
+        # 数值输入框: clam 默认白底, 在深色界面里很突兀
+        s.configure("TSpinbox", fieldbackground=CARD, background=TRACK, foreground=FG, insertcolor=FG,
+                    arrowcolor=SUB, bordercolor=BORDER, lightcolor=CARD, darkcolor=CARD,
+                    arrowsize=self.root.winfo_pixels("8p"), padding=("3p", "2p"))
+        s.map("TSpinbox", fieldbackground=[("disabled", BG)], foreground=[("disabled", MUTED)],
+              background=[("pressed", BORDER), ("active", "#2a2e37")], arrowcolor=[("active", FG)],
+              bordercolor=[("focus", ACCENT)], lightcolor=[("focus", ACCENT)], darkcolor=[("focus", ACCENT)],
+              selectbackground=[("focus", ACCENT)], selectforeground=[("focus", "white")])
         # 勾选框换成自绘图标 (clam 自带的选中标记是 ×, 不是对号)
         size, gap, border = self.root.winfo_pixels("9p"), self.root.winfo_pixels("5p"), "#5a6070"
         img = lambda *a: tk.PhotoImage(data=check_png(size, gap, *a), format="png")
@@ -404,6 +416,7 @@ class App:
                 self.notice.pack(fill="x", pady=(0, "8p"), before=self.btn_bar)
             else:
                 self.notice.pack_forget()
+            self._update_main_minimum()
         if launch != bool(self.launch_btn.winfo_manager()):
             if launch:
                 self.launch_btn.grid(row=0, column=1, padx=("8p", 0))
@@ -438,10 +451,19 @@ class App:
         y = (r.winfo_screenheight() - h) // 2
         r.geometry(f"+{max(x, 0)}+{max(y, 0)}")
 
+    def _update_main_minimum(self):
+        """按当前可见内容更新主窗口的最小尺寸。"""
+        r = self.root
+        r.update_idletasks()
+        r.minsize(max(r.winfo_pixels("300p"), r.winfo_reqwidth()),
+                  max(r.winfo_pixels("220p"), r.winfo_reqheight()))
+
     def show_window(self):
         r = self.root
         r.deiconify()
         r.state("normal")
+        # 从托盘恢复时先让 Tk 完成尺寸计算和首帧绘制，减少短暂的白块与空白区域。
+        r.update_idletasks()
         r.lift()
         r.focus_force()
 
@@ -990,7 +1012,9 @@ class App:
     def _devices(self, parent):
         """CPU / 显卡各一张卡片: 大字温度, 下面是利用率、内存/显存占用 (带进度条) 和风扇。"""
         row = tk.Frame(parent, bg=BG)
-        row.pack(fill="x")
+        # 多出的纵向空间交给两张主卡片，窗口上下左右拉伸都会同步适应。
+        row.pack(fill="both", expand=True)
+        row.rowconfigure(0, weight=1)
         for i, (dev, name, accent) in enumerate((("cpu", "CPU", "#60a5fa"), ("gpu", "显卡", "#a78bfa"))):
             row.columnconfigure(i, weight=1, uniform="dev")
             card = tk.Frame(row, bg=CARD, padx="10p", pady="8p", highlightthickness=1, highlightbackground=BORDER)
@@ -1229,6 +1253,7 @@ class App:
         for w, ok in zip(self.optional, has):
             if ok:
                 w.pack(fill="x", pady=("6p", 0), before=self.footer)
+        self._update_main_minimum()
 
 
 if __name__ == "__main__":
