@@ -1,5 +1,10 @@
 __pycache__/
 *.pyc
+# Development caches, build environment and test data
+.build/
+# Local configuration/history/logs and third-party runtime/downloads
+data/
+runtime/
 # 运行时由 LibreHardwareMonitor.zip 自动解压
 LibreHardwareMonitor/
 
@@ -9,3 +14,10 @@ LibreHardwareMonitor.zip.part
 
 # 本地设置 (关闭按钮行为等)
 settings.json
+history.sqlite3*
+monitor.log*
+build/
+dist/
+.build-venv/
+.test-data/
+*.spec

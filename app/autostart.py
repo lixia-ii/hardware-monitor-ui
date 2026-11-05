@@ -11,13 +11,15 @@ import tempfile
 from xml.sax.saxutils import escape
 
 TASK = "HardwareMonitorUI"
-ENTRY = os.path.join(os.path.dirname(os.path.abspath(__file__)), "monitor.py")
+ENTRY = os.path.abspath(sys.executable) if getattr(sys, "frozen", False) else os.path.join(os.path.dirname(os.path.abspath(__file__)), "monitor.py")
 _NO_WINDOW = subprocess.CREATE_NO_WINDOW
 
 
 def _pythonw():
     """优先用 pythonw.exe, 开机时不闪控制台黑窗。"""
     exe = os.path.abspath(sys.executable)
+    if getattr(sys, "frozen", False):
+        return exe
     cand = os.path.join(os.path.dirname(exe), "pythonw.exe")
     return cand if os.path.exists(cand) else exe
 
@@ -26,6 +28,7 @@ def _xml():
     """任务定义。用 XML 而不是 schtasks 的命令行参数: 命令行建的任务默认"使用电池时不启动"、运行满 72 小时强制结束,
     对常驻程序都不合适。"""
     user = escape(os.environ.get("USERDOMAIN", "") + "\\" + os.environ.get("USERNAME", ""))
+    arguments = "--autostart" if getattr(sys, "frozen", False) else f'"{ENTRY}" --autostart'
     return f"""<?xml version="1.0" encoding="UTF-16"?>
 <Task version="1.2" xmlns="http://schemas.microsoft.com/windows/2004/02/mit/task">
   <RegistrationInfo><Description>硬件监控: 登录时启动并最小化到托盘</Description></RegistrationInfo>
@@ -41,7 +44,7 @@ def _xml():
   </Settings>
   <Actions Context="Author"><Exec>
     <Command>{escape(_pythonw())}</Command>
-    <Arguments>{escape(f'"{ENTRY}" --autostart')}</Arguments>
+    <Arguments>{escape(arguments)}</Arguments>
     <WorkingDirectory>{escape(os.path.dirname(ENTRY))}</WorkingDirectory>
   </Exec></Actions>
 </Task>

@@ -1,17 +1,11 @@
 @echo off
-rem Self-elevate once so the monitor can also close LibreHardwareMonitor on exit
-rem (paths go through env vars so quotes/apostrophes in the path can't break PowerShell)
-%SystemRoot%\System32\fltmc.exe >nul 2>&1 || (
-  set "SELF=%~f0"
-  powershell -NoProfile -Command "Start-Process -FilePath $env:SELF -Verb RunAs"
-  exit /b
-)
 cd /d "%~dp0"
-set "ZIP=%~dp0LibreHardwareMonitor.zip"
-set "DEST=%~dp0."
+set "ZIP=%~dp0runtime\cache\LibreHardwareMonitor.zip"
+set "DEST=%~dp0runtime"
+if not exist "%~dp0runtime\cache" mkdir "%~dp0runtime\cache"
 rem The zip is published as a GitHub Release asset instead of being kept in git
 set "ZIP_URL=https://github.com/lixia-ii/hardware-monitor-ui/releases/latest/download/LibreHardwareMonitor.zip"
-if exist "%~dp0LibreHardwareMonitor\LibreHardwareMonitor.exe" goto run_lhm
+if exist "%~dp0runtime\LibreHardwareMonitor\LibreHardwareMonitor.exe" goto run_ui
 
 if not exist "%ZIP%" (
   echo Downloading LibreHardwareMonitor.zip ...
@@ -22,7 +16,7 @@ if not exist "%ZIP%" (
   echo.
   echo Download failed. Please download LibreHardwareMonitor.zip manually from
   echo   https://github.com/lixia-ii/hardware-monitor-ui/releases
-  echo put it next to start.bat, then run start.bat again.
+  echo put it in runtime\cache, then run start.bat again.
   pause
   exit /b 1
 )
@@ -38,24 +32,29 @@ if errorlevel 1 (
 )
 echo Extracting LibreHardwareMonitor.zip ...
 powershell -NoProfile -Command "Expand-Archive -LiteralPath $env:ZIP -DestinationPath $env:DEST -Force"
-if not exist "%~dp0LibreHardwareMonitor\LibreHardwareMonitor.exe" (
+if not exist "%~dp0runtime\LibreHardwareMonitor\LibreHardwareMonitor.exe" (
   echo.
   echo Extraction failed. Delete LibreHardwareMonitor.zip and run start.bat again.
   pause
   exit /b 1
 )
 
-:run_lhm
-set OWN=
-%SystemRoot%\System32\tasklist.exe /fi "imagename eq LibreHardwareMonitor.exe" | %SystemRoot%\System32\find.exe /i "LibreHardwareMonitor.exe" >nul
-if errorlevel 1 (
-  start "" /min "%~dp0LibreHardwareMonitor\LibreHardwareMonitor.exe"
-  set OWN=--own-libre
+:run_ui
+rem The UI acquires its single-instance mutex before launching and owning LHM.
+if exist "%~dp0HardwareMonitorUI.exe" (
+  start "" "%~dp0HardwareMonitorUI.exe" --start-libre
+  exit /b
 )
-rem pythonw may be missing when Python was installed with only the py launcher
 where pythonw >nul 2>&1
-if errorlevel 1 (
-  start "" pyw "%~dp0app\monitor.py" %OWN%
-) else (
-  start "" pythonw "%~dp0app\monitor.py" %OWN%
+if not errorlevel 1 (
+  start "" pythonw "%~dp0app\monitor.py" --start-libre
+  exit /b
 )
+where pyw >nul 2>&1
+if not errorlevel 1 (
+  start "" pyw "%~dp0app\monitor.py" --start-libre
+  exit /b
+)
+echo Python was not found. Install Python 3 or download the portable EXE release.
+pause
+exit /b 1
