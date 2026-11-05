@@ -1,6 +1,7 @@
 """硬件监控: 实时显示 CPU/GPU 温度、利用率、内存/显存占用、风扇转速与网速。"""
 import ctypes
 import json
+import math
 import os
 import re
 import subprocess
@@ -8,6 +9,7 @@ import sys
 import threading
 import time
 import tkinter as tk
+from collections import deque
 from tkinter import ttk
 
 import autostart
@@ -19,6 +21,9 @@ INTERVAL = 1.0  # 两次读取的最短间隔 (秒)
 ICON = os.path.join(os.path.dirname(os.path.abspath(__file__)), "app.ico")
 SETTINGS = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "settings.json")
 CLOSE_CHOICES = (("ask", "每次询问"), ("tray", "最小化到托盘"), ("exit", "直接退出"))
+HISTORY_INTERVAL = 5.0
+HISTORY_MAX = 24 * 60 * 60 // int(HISTORY_INTERVAL)
+DEFAULT_ALERTS = {"enabled": True, "cpu_temp": 85, "gpu_temp": 85, "cooldown": 300}
 
 
 # 深色配色
@@ -262,6 +267,10 @@ class App:
         self.btn_bar.pack(fill="x")
         self.info_btn = ttk.Button(self.btn_bar, text="硬件信息", command=self.show_info, cursor="hand2")
         self.info_btn.pack(side="right")
+        self.history_btn = ttk.Button(self.btn_bar, text="历史", command=self.show_history, cursor="hand2")
+        self.history_btn.pack(side="right", padx=(0, "6p"))
+        self.float_btn = ttk.Button(self.btn_bar, text="悬浮窗", command=self.toggle_floating, cursor="hand2")
+        self.float_btn.pack(side="right", padx=(0, "6p"))
         # 窗口置顶开关 (原生标题栏放不了按钮, 放在底栏), 开启时高亮
         self.pin_btn = ttk.Button(self.btn_bar, text="置顶", command=self.toggle_topmost, cursor="hand2")
         self.pin_btn.pack(side="right", padx=(0, "6p"))
@@ -292,6 +301,13 @@ class App:
         self.fresh = False   # 后台线程读到新数据后置 True, 由主线程渲染
         self.busy = False
         self.last_start = 0.0
+        self.history = deque(maxlen=HISTORY_MAX)
+        self.last_history = 0.0
+        self.alert_last = {}
+        self.float_win = None
+        self._set_float_button()
+        if self.settings.get("floating", {}).get("enabled"):
+            self.show_floating()
         self.centered = False
         self.center()
         self.tick()
@@ -429,6 +445,283 @@ class App:
         r.lift()
         r.focus_force()
 
+    def _alerts(self):
+        saved = self.settings.get("alerts", {})
+        cfg = {**DEFAULT_ALERTS, **saved}
+        for key in ("cpu_temp", "gpu_temp", "cooldown"):
+            try:
+                cfg[key] = int(cfg[key])
+            except (TypeError, ValueError):
+                cfg[key] = DEFAULT_ALERTS[key]
+        return cfg
+
+    def _record_history(self, d):
+        now = time.time()
+        if now - self.last_history < HISTORY_INTERVAL:
+            return
+        self.last_history = now
+        self.history.append((now, {k: d.get(k) for k in (
+            "cpu_temp", "gpu_temp", "cpu_load", "gpu_load", "mem_load", "gpu_mem_load", "net_up", "net_down")}))
+
+    def _check_alerts(self, d):
+        cfg = self._alerts()
+        if not cfg["enabled"]:
+            return
+        now = time.monotonic()
+        for key, name in (("cpu_temp", "CPU"), ("gpu_temp", "显卡")):
+            value, limit = d.get(key), cfg[key]
+            if value is None or value < limit:
+                self.alert_last.pop(key, None)
+                continue
+            if now - self.alert_last.get(key, -float("inf")) < max(30, cfg["cooldown"]):
+                continue
+            self.alert_last[key] = now
+            msg = f"{name} 温度 {value:.0f}°C，已超过 {limit}°C"
+            if not self.tray.notify("硬件温度告警", msg):
+                self._flash(msg)
+
+    def _set_float_button(self):
+        active = self.float_win is not None and self.float_win.winfo_exists()
+        self.float_btn.config(style="On.TButton" if active else "TButton")
+        var = getattr(self, "_float_var", None)
+        if var is not None:  # 设置窗里的勾选框跟随悬浮窗实际状态 (如从悬浮窗 × 关闭)
+            var.set(active)
+
+    def toggle_floating(self):
+        if self.float_win is not None and self.float_win.winfo_exists():
+            self.hide_floating()
+        else:
+            self.show_floating()
+
+    def show_floating(self):
+        if self.float_win is not None and self.float_win.winfo_exists():
+            self.float_win.deiconify()
+            self.float_win.lift()
+            return
+        saved = self.settings.get("floating", {})
+        w = self.float_win = tk.Toplevel(self.root)
+        w.overrideredirect(True)
+        w.attributes("-topmost", True)
+        w.configure(bg=BORDER)
+        x, y = saved.get("x", 40), saved.get("y", 40)
+        w.geometry(f"+{x}+{y}")
+        shell = tk.Frame(w, bg=CARD, padx="8p", pady="5p")
+        shell.pack(fill="both", expand=True, padx=1, pady=1)
+        head = tk.Frame(shell, bg=CARD)
+        head.pack(fill="x")
+        tk.Label(head, text="硬件监控", bg=CARD, fg=MUTED, font=(FONT, 8, "bold")).pack(side="left")
+        close = tk.Label(head, text="×", bg=CARD, fg=MUTED, font=(FONT, 12), cursor="hand2")
+        close.pack(side="right")
+        close.bind("<Button-1>", lambda _: self.hide_floating())
+        self.float_values = {}
+        for key, name, color in (("cpu", "CPU", "#60a5fa"), ("gpu", "显卡", "#a78bfa")):
+            row = tk.Frame(shell, bg=CARD)
+            row.pack(fill="x", pady=("3p", 0))
+            tk.Label(row, text=name, bg=CARD, fg=SUB, font=(FONT, 9)).pack(side="left")
+            v = tk.Label(row, text="--", bg=CARD, fg=color, font=(NUM, 13, "bold"))
+            v.pack(side="right")
+            self.float_values[key] = v
+
+        drag = {}
+        def begin(event):
+            drag["x"], drag["y"] = event.x_root - w.winfo_x(), event.y_root - w.winfo_y()
+        def move(event):
+            if drag:
+                w.geometry(f"+{event.x_root - drag['x']}+{event.y_root - drag['y']}")
+        def finish(_):
+            drag.clear()
+            self._save_floating_geometry()
+        for widget in (head, *head.winfo_children()):
+            if widget is close:
+                continue
+            widget.bind("<ButtonPress-1>", begin)
+            widget.bind("<B1-Motion>", move)
+            widget.bind("<ButtonRelease-1>", finish)
+        floating = self.settings.setdefault("floating", {})
+        floating["enabled"] = True
+        save_settings(self.settings)
+        self._set_float_button()
+        if self.data:
+            self._update_floating(self.data)
+
+    def _save_floating_geometry(self):
+        if self.float_win is None or not self.float_win.winfo_exists():
+            return
+        floating = self.settings.setdefault("floating", {})
+        floating.update(enabled=True, x=self.float_win.winfo_x(), y=self.float_win.winfo_y())
+        save_settings(self.settings)
+
+    def hide_floating(self):
+        self._save_floating_geometry()
+        if self.float_win is not None and self.float_win.winfo_exists():
+            self.float_win.destroy()
+        self.float_win = None
+        self.settings.setdefault("floating", {})["enabled"] = False
+        save_settings(self.settings)
+        self._set_float_button()
+
+    def _update_floating(self, d):
+        if self.float_win is None or not self.float_win.winfo_exists():
+            return
+        for key, temp_key, load_key in (("cpu", "cpu_temp", "cpu_load"), ("gpu", "gpu_temp", "gpu_load")):
+            temp, load = d.get(temp_key), d.get(load_key)
+            text = "--" if temp is None else f"{temp:.0f}°C"
+            if load is not None:
+                text += f"  {load:.0f}%"
+            self._set(self.float_values[key], text, temp_color(temp))
+
+    def show_history(self):
+        if getattr(self, "history_win", None) and self.history_win.winfo_exists():
+            self.history_win.lift()
+            return
+        w = self.history_win = tk.Toplevel(self.root)
+        w.title("历史数据")
+        w.configure(bg=BG)
+        w.minsize(w.winfo_pixels("480p"), w.winfo_pixels("300p"))
+        w.geometry(f"{w.winfo_pixels('560p')}x{w.winfo_pixels('360p')}")
+        w.attributes("-topmost", self.root.attributes("-topmost"))
+        set_icon(w)
+        controls = tk.Frame(w, bg=BG, padx="10p", pady="8p")
+        controls.pack(fill="x")
+        metric, span = tk.StringVar(value="温度"), tk.StringVar(value="1 小时")
+        for text in ("温度", "利用率", "网络"):
+            ttk.Radiobutton(controls, text=text, value=text, variable=metric, cursor="hand2").pack(side="left", padx=(0, "8p"))
+        selector = tk.Frame(controls, bg=TRACK, highlightthickness=1, highlightbackground=BORDER, cursor="hand2")
+        selector.pack(side="right")
+        selected = tk.Label(selector, textvariable=span, bg=TRACK, fg=FG, font=(FONT, 9), padx="7p", pady="3p", cursor="hand2")
+        selected.pack(side="left")
+        arrow = tk.Label(selector, text="▾", bg=TRACK, fg=MUTED, font=(FONT, 9), padx="5p", cursor="hand2")
+        arrow.pack(side="left")
+        tk.Label(controls, text="范围", bg=BG, fg=MUTED, font=(FONT, 9)).pack(side="right", padx=(0, "4p"))
+        range_popup = [None]
+
+        def close_range_popup(_=None):
+            if range_popup[0] is not None and range_popup[0].winfo_exists():
+                range_popup[0].destroy()
+            range_popup[0] = None
+
+        def show_range_popup(_=None):
+            if range_popup[0] is not None and range_popup[0].winfo_exists():
+                close_range_popup()
+                return
+            p = range_popup[0] = tk.Toplevel(w)
+            p.overrideredirect(True)
+            p.attributes("-topmost", True)
+            p.configure(bg=BORDER)
+            p.geometry(f"+{selector.winfo_rootx()}+{selector.winfo_rooty() + selector.winfo_height() + 2}")
+            box = tk.Frame(p, bg=CARD, padx=1, pady=1)
+            box.pack()
+            for option in ("1 小时", "24 小时"):
+                row = tk.Label(box, text=option, bg=ACCENT if span.get() == option else CARD,
+                               fg="white" if span.get() == option else FG, font=(FONT, 9), anchor="w",
+                               padx="8p", pady="4p", width=8, cursor="hand2")
+                row.pack(fill="x")
+                row.bind("<Enter>", lambda e: e.widget.config(bg=CHIP_HOVER))
+                row.bind("<Leave>", lambda e, opt=option: e.widget.config(bg=ACCENT if span.get() == opt else CARD))
+                row.bind("<Button-1>", lambda _, opt=option: (span.set(opt), close_range_popup()))
+            p.bind("<FocusOut>", close_range_popup)
+            p.focus_force()
+        for widget in (selector, selected, arrow):
+            widget.bind("<Button-1>", show_range_popup)
+        note = tk.Label(w, text="每 5 秒采样一次；数据仅保留在本次运行期间。", bg=BG, fg=MUTED,
+                        font=(FONT, 8), justify="left", anchor="w")
+        note.pack(fill="x", anchor="w", padx="10p")
+        note.bind("<Configure>", lambda e: note.config(wraplength=e.width))
+        canvas = tk.Canvas(w, bg=CARD, highlightthickness=1, highlightbackground=BORDER)
+        canvas.pack(fill="both", expand=True, padx="10p", pady=("5p", "10p"))
+
+        def draw(*_):
+            if not w.winfo_exists():
+                return
+            canvas.delete("all")
+            width, height = max(canvas.winfo_width(), 20), max(canvas.winfo_height(), 20)
+            # 顶部预留给单位；否则字体上沿会落在 Canvas 边框外而被裁掉。
+            left, top, right, bottom = 42, 30, 12, 27
+            now, hours = time.time(), {"1 小时": 1, "24 小时": 24}.get(span.get(), 1)
+            rows = [(t, values) for t, values in self.history if t >= now - hours * 3600]
+            limit = max(20, (width - left - right) // 2)
+            if len(rows) > limit:  # 点数远多于像素时按桶取平均, 免得 24 小时曲线重绘太慢
+                step, merged = len(rows) / limit, []
+                for i in range(limit):
+                    chunk = rows[int(i * step):int((i + 1) * step)]
+                    if not chunk:
+                        continue
+                    avg = {}
+                    for k in chunk[0][1]:
+                        got = [v[k] for _, v in chunk if v.get(k) is not None]
+                        avg[k] = sum(got) / len(got) if got else None
+                    merged.append((chunk[len(chunk) // 2][0], avg))
+                rows = merged
+            kind = metric.get()
+            specs = {
+                "温度": (("cpu_temp", "CPU", "#60a5fa"), ("gpu_temp", "显卡", "#a78bfa")),
+                "利用率": (("cpu_load", "CPU", "#60a5fa"), ("gpu_load", "显卡", "#a78bfa"),
+                           ("mem_load", "内存", "#4ade80"), ("gpu_mem_load", "显存", "#fbbf24")),
+                "网络": (("net_up", "上传", "#60a5fa"), ("net_down", "下载", "#a78bfa")),
+            }[kind]
+            def value(v):
+                return v / 1024 ** 2 if kind == "网络" and v is not None else v
+            vals = [value(v.get(key)) for _, v in rows for key, _, _ in specs if value(v.get(key)) is not None]
+            unit = "%" if kind == "利用率" else "MB/s" if kind == "网络" else "°C"
+            # 刻度按当前页数据的最低/最高值取整, 只在左侧画刻度, 不画横穿的网格线
+            lo, hi = min(vals, default=0), max(vals, default=1)
+            if hi - lo < 1e-9:
+                pad = max(abs(hi) * 0.05, 0.05 if kind == "网络" else 1)
+                lo, hi = lo - pad, hi + pad
+            raw = (hi - lo) / 4
+            mag = 10 ** math.floor(math.log10(raw))
+            step = next(m * mag for m in (1, 2, 2.5, 5, 10) if raw <= m * mag + 1e-12)
+            axis_lo, axis_hi = math.floor(lo / step + 1e-9) * step, math.ceil(hi / step - 1e-9) * step
+            if kind != "温度":
+                axis_lo = max(0, axis_lo)
+            if kind == "利用率":
+                axis_hi = min(100, axis_hi)
+            if axis_hi <= axis_lo:
+                axis_hi = axis_lo + step
+            digits = next((d for d in range(4) if abs(step * 10 ** d - round(step * 10 ** d)) < 1e-6), 3)
+            canvas.create_line(left, top, left, height - bottom, fill=TRACK)
+            tick = axis_lo
+            while tick <= axis_hi + step * 1e-6:
+                y = top + (1 - (tick - axis_lo) / (axis_hi - axis_lo)) * (height - top - bottom)
+                canvas.create_line(left - 4, y, left, y, fill=MUTED)
+                canvas.create_text(left - 7, y, text=f"{tick:.{digits}f}", fill=MUTED, anchor="e", font=(NUM, 8))
+                tick += step
+            canvas.create_text(width - right, top - 8, text=unit, fill=MUTED, anchor="se", font=(NUM, 8))
+            legend_x = left + 8
+            for key, label, color in specs:
+                points = []
+                for t, values in rows:
+                    v = value(values.get(key))
+                    if v is None:
+                        if len(points) > 3:
+                            canvas.create_line(*points, fill=color, width=2, smooth=True)
+                        points = []
+                        continue
+                    x = left + (t - (now - hours * 3600)) / (hours * 3600) * (width - left - right)
+                    y = top + (1 - (min(max(v, axis_lo), axis_hi) - axis_lo) / (axis_hi - axis_lo)) * (height - top - bottom)
+                    points.extend((x, y))
+                if len(points) > 3:
+                    canvas.create_line(*points, fill=color, width=2, smooth=True)
+                # 图例横向排列，网络的“上传 / 下载”不会在窄窗口里挤成一团。
+                canvas.create_line(legend_x, top + 9, legend_x + 11, top + 9, fill=color, width=2)
+                canvas.create_text(legend_x + 15, top + 9, text=label, fill=color, anchor="w", font=(FONT, 8, "bold"))
+                legend_x += 54
+            canvas.create_text(left, height - 10, text=f"{hours} 小时前", fill=MUTED, anchor="w", font=(FONT, 8))
+            canvas.create_text(width - right, height - 10, text="现在", fill=MUTED, anchor="e", font=(FONT, 8))
+            if not rows:
+                canvas.create_text(width / 2, height / 2, text="正在收集历史数据…", fill=MUTED, font=(FONT, 10))
+
+        metric.trace_add("write", draw)
+        span.trace_add("write", draw)
+        canvas.bind("<Configure>", draw)
+        draw()
+        def refresh():
+            if w.winfo_exists():
+                draw()
+                w.after(5000, refresh)  # 采样间隔就是 5 秒, 更勤也没有新数据
+        w.after(5000, refresh)
+        self.center_on_main(w)
+
     def _dialog(self, title):
         """深色模态小窗。返回 (窗口, 内容框架); 内容填好后调用 _show_dialog。"""
         w = tk.Toplevel(self.root)
@@ -543,10 +836,61 @@ class App:
             run(lambda: autostart.set_enabled(want), done)
         auto_cb.config(command=toggled)
         run(autostart.is_enabled, loaded)
+
+        ttk.Separator(body).pack(fill="x", pady=("12p", "10p"))
+        ttk.Label(body, text="温度告警", font=(FONT, 9, "bold"), foreground=MUTED).pack(anchor="w")
+        alert_cfg = self._alerts()
+        alert_on = tk.BooleanVar(value=alert_cfg["enabled"])
+        cpu_limit = tk.StringVar(value=str(alert_cfg["cpu_temp"]))
+        gpu_limit = tk.StringVar(value=str(alert_cfg["gpu_temp"]))
+        cooldown = tk.StringVar(value=str(alert_cfg["cooldown"] // 60))
+
+        def save_alerts(_=None):
+            def number(var, fallback, low, high):
+                try:
+                    return min(high, max(low, int(var.get())))
+                except ValueError:
+                    return fallback
+            cpu = number(cpu_limit, DEFAULT_ALERTS["cpu_temp"], 40, 110)
+            gpu = number(gpu_limit, DEFAULT_ALERTS["gpu_temp"], 40, 110)
+            minutes = number(cooldown, DEFAULT_ALERTS["cooldown"] // 60, 1, 120)
+            cpu_limit.set(str(cpu))  # 把规范化后的值写回输入框, 界面与实际保存一致
+            gpu_limit.set(str(gpu))
+            cooldown.set(str(minutes))
+            self.settings["alerts"] = {"enabled": alert_on.get(), "cpu_temp": cpu, "gpu_temp": gpu,
+                                       "cooldown": minutes * 60}
+            save_settings(self.settings)
+
+        ttk.Checkbutton(body, text="温度超过阈值时提醒", variable=alert_on, command=save_alerts,
+                        cursor="hand2").pack(anchor="w", padx=("8p", 0))
+        limits = ttk.Frame(body)
+        limits.pack(anchor="w", padx=("8p", 0), pady=("4p", 0))
+        for label, var in (("CPU", cpu_limit), ("显卡", gpu_limit)):
+            ttk.Label(limits, text=label).pack(side="left")
+            box = ttk.Spinbox(limits, from_=40, to=110, width=4, textvariable=var, command=save_alerts)
+            box.pack(side="left", padx=("3p", "3p"))
+            box.bind("<FocusOut>", save_alerts)
+            ttk.Label(limits, text="°C").pack(side="left", padx=(0, "8p"))
+        ttk.Label(limits, text="冷却").pack(side="left")
+        box = ttk.Spinbox(limits, from_=1, to=120, width=4, textvariable=cooldown, command=save_alerts)
+        box.pack(side="left", padx=("3p", "3p"))
+        box.bind("<FocusOut>", save_alerts)
+        ttk.Label(limits, text="分钟").pack(side="left")
+
+        ttk.Label(body, text="悬浮窗", font=(FONT, 9, "bold"), foreground=MUTED).pack(anchor="w", pady=("12p", 0))
+        floating_on = self._float_var = tk.BooleanVar(value=self.float_win is not None and self.float_win.winfo_exists())
+        def toggle_float_setting():
+            if floating_on.get():
+                self.show_floating()
+            else:
+                self.hide_floating()
+        ttk.Checkbutton(body, text="显示 CPU 和显卡的紧凑悬浮窗", variable=floating_on,
+                        command=toggle_float_setting, cursor="hand2").pack(anchor="w", padx=("8p", 0))
         self._show_dialog(w)
 
     def quit(self):
         self.closing = True
+        self._save_floating_geometry()
         self.tray.destroy()
         if self.own_libre:
             self.root.withdraw()  # 等待 LibreHardwareMonitor 退出最多 3 秒, 先隐藏窗口免得看起来卡死
@@ -826,6 +1170,9 @@ class App:
             self._set(box._vals[key], text, color)
 
     def render(self, d):
+        self._record_history(d)
+        self._check_alerts(d)
+        self._update_floating(d)
         self._update_gpu(d)
         for k in ("cpu_temp", "gpu_temp"):
             t = d[k]

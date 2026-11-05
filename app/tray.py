@@ -12,7 +12,8 @@ WM_TRAY = 0x0400 + 20  # WM_USER + 20: 托盘图标的回调消息
 WM_WAKE = 0x8000 + 1   # WM_APP + 1: 第二个实例请求唤出窗口
 WM_LBUTTONUP, WM_RBUTTONUP, WM_CONTEXTMENU = 0x0202, 0x0205, 0x007B
 NIM_ADD, NIM_MODIFY, NIM_DELETE = 0, 1, 2
-NIF_MESSAGE, NIF_ICON, NIF_TIP = 0x01, 0x02, 0x04
+NIF_MESSAGE, NIF_ICON, NIF_TIP, NIF_INFO = 0x01, 0x02, 0x04, 0x10
+NIIF_WARNING = 0x00000002
 MENU_SHOW, MENU_QUIT = 1, 2
 
 u32 = ctypes.WinDLL("user32", use_last_error=True)
@@ -134,6 +135,17 @@ class Tray:
         if self.ok and tip != self._tip:
             self._tip = tip
             self._notify(NIM_MODIFY)
+
+    def notify(self, title, message):
+        """显示 Windows 托盘提醒；托盘不可用时返回 False。"""
+        if not self.ok:
+            return False
+        nid = self._nid()
+        nid.uFlags |= NIF_INFO
+        nid.szInfoTitle = title[:63]
+        nid.szInfo = message[:255]
+        nid.dwInfoFlags = NIIF_WARNING
+        return bool(shell32.Shell_NotifyIconW(NIM_MODIFY, ctypes.byref(nid)))
 
     def _wndproc(self, hwnd, msg, wparam, lparam):
         if msg == WM_TRAY:
