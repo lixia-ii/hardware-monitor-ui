@@ -56,7 +56,8 @@ def validate(raw):
     if isinstance(raw.get("collapsed"), list):
         out["collapsed"] = [x for x in raw["collapsed"] if isinstance(x, str)]
     out["interval"] = number(raw.get("interval"), 1, 0.5, 30)
-    out["gpu_id"] = raw.get("gpu_id") if isinstance(raw.get("gpu_id"), str) else None
+    gpu = raw.get("gpu_id")
+    out["gpu_id"] = gpu if isinstance(gpu, str) and gpu else None
     ids = raw.get("nic_ids")
     out["nic_ids"] = [x for x in ids if isinstance(x, str)] if isinstance(ids, list) else None
     for key in ("history_enabled",):

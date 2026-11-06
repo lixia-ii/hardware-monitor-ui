@@ -104,6 +104,23 @@ with patch("collector.sensors.read", side_effect=read), patch("autostart.sync"),
             app.settings["display"]["cpu_load"]["visible"] = True
             app._apply_display()
             assert app.metric_blocks["cpu_load"][0].winfo_manager() == "pack"
+            # Hiding a device temperature keeps the card labelled without implying a temperature.
+            app.settings["display"]["cpu_temp"] = {"visible": False}
+            app._apply_display()
+            assert not app.metric_blocks["cpu_temp"][0].winfo_manager()
+            assert app.metric_titles["cpu_temp"].cget("text") == "CPU"
+            app.settings["display"]["cpu_temp"] = {"visible": True}
+            app._apply_display()
+            assert app.metric_titles["cpu_temp"].cget("text") == "CPU 温度"
+            # Hiding every sensor of a group hides the card instead of reporting "未检测到".
+            app.render(app.data)
+            hidden = {f"sensor:case:{key}": {"visible": False} for key, _ in app.case_box._keys}
+            assert hidden, "Fixture has no case fan rows"
+            app.settings["display"].update(hidden)
+            app._apply_display()
+            app.render(app.data)
+            assert not app.case_box.master.winfo_manager(), "Empty group card stayed visible"
+            app.settings["display"] = {}
             app.show_floating()
             assert app.float_win.winfo_exists()
             app.hide_floating()

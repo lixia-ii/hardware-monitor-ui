@@ -20,13 +20,14 @@ from dialogs import Dialogs
 from lifecycle import LibreProcess, elevate_ui
 
 import autostart
+import history
 import hwinfo
 import sensors
 import tray
 
 ICON = str(config.RESOURCE / "app.ico")
-HISTORY_MAX = 17280
 DEFAULT_ALERTS = config.DEFAULT_ALERTS
+DEVICE_TITLES = {"cpu_temp": "CPU", "gpu_temp": "显卡"}  # 温度隐藏后卡片标题退回设备名
 
 # 深色配色
 BG = "#16181d"
@@ -302,7 +303,7 @@ class App(Dialogs):
             threading.Thread(target=autostart.sync, daemon=True).start()
         self.gpu_sel = self.settings["gpu_id"]
         self.gpu_cur = None
-        self.history = deque(maxlen=HISTORY_MAX)
+        self.history = deque(maxlen=history.MAX_ROWS)
         self.recent_alerts = deque(maxlen=100)
         self.alert_engine = AlertEngine()
         self.collector = Collector(self.settings)
@@ -433,6 +434,9 @@ class App(Dialogs):
         def job():
             if not sensors.lhm_running(force=True):
                 self.libre.launch(exe)
+                if getattr(self, "closing", False):
+                    # 用户在 UAC 确认期间退出: 刚拉起的进程不能成为孤儿。
+                    self.libre.stop()
             return True
         def done(ok):
             self.launch_until = time.monotonic() + 6 if ok else 0
@@ -698,8 +702,10 @@ class App(Dialogs):
         self.root.withdraw()
         self.collector.stop()
         def stop():
-            # A UAC launch can still be pending. Wait for it before closing its owned handle.
-            while self.launch_until == float("inf"):
+            # A UAC launch can still be pending. Wait briefly for its owned handle,
+            # but never keep the whole process alive on an unanswered prompt.
+            deadline = time.monotonic() + 5
+            while self.launch_until == float("inf") and time.monotonic() < deadline:
                 time.sleep(0.1)
             self.libre.stop()
             self.collector.join(timeout=8)
@@ -850,12 +856,19 @@ class App(Dialogs):
     def _update_gpu(self, d):
         """显示显卡型号标签: 多块时可点击切换, 一块时只显示型号, 没有显卡就隐藏。"""
         self.gpu_list = d["gpus"]
-        if self.gpu_list:
-            self._show_gpu(d["gpu_id"] if d["gpu_id"] else self.gpu_list[0][0])
-            if not self.gpu_chip.winfo_manager():
-                self.gpu_chip.pack(side="right")
-        elif self.gpu_chip.winfo_manager():
-            self.gpu_chip.pack_forget()
+        if not self.gpu_list:
+            if self.gpu_chip.winfo_manager():
+                self.gpu_chip.pack_forget()
+            return
+        if d["gpu_id"] is None and self.gpu_sel:
+            # 用户固定的显卡暂时不在列表里 (断连/重新编号): 不冒充另一块卡。
+            self.gpu_cur = self.gpu_sel
+            self._set(self.gpu_chip, "已选显卡（暂未连接）")
+            self.gpu_chip.config(cursor="hand2" if len(self.gpu_list) > 1 else "")
+        else:
+            self._show_gpu(d["gpu_id"] or self.gpu_list[0][0])
+        if not self.gpu_chip.winfo_manager():
+            self.gpu_chip.pack(side="right")
 
     def _card(self, parent, title, collapse_key=None):
         """分组卡片, 返回放内容的 body 框架 (body.master 是卡片本身)。
@@ -1033,11 +1046,13 @@ class App(Dialogs):
                         for i, (k, n, t) in enumerate(d["extra_temps"]) if k == kind],
                        "未检测到", self._value)
         pumps = d.get("pumps", [])
-        if pumps:
-            self._rows(self.pump_box,
-                       [(sensor_id("pumps", i, n), n, f"{rpm:.0f} RPM", None) for i, (n, rpm) in enumerate(pumps)],
-                       "", self._value)
-        has = [d["net_up"] is not None or d["net_down"] is not None, bool(d["case_fans"]), bool(pumps)] + [any(e[0] == k for e in d["extra_temps"]) for k in self.extra_boxes]
+        self._rows(self.pump_box,
+                   [(sensor_id("pumps", i, n), n, f"{rpm:.0f} RPM", None) for i, (n, rpm) in enumerate(pumps)],
+                   "", self._value)
+        # 卡片是否显示按"过滤后还有没有可见行"判断: 全部隐藏时不该再提示"未检测到"。
+        has = [d["net_up"] is not None or d["net_down"] is not None,
+               bool(self.case_box._keys), bool(self.pump_box._keys)] + [
+            bool(box._keys) for box in self.extra_boxes.values()]
         self._layout(has)
         self._notice(d["error"], d["lhm_down"], d["lhm_running"])
         temps = [f"{name} {d[k]:.0f}°C" for k, name in (("cpu_temp", "CPU"), ("gpu_temp", "显卡")) if d[k] is not None]
@@ -1057,7 +1072,13 @@ class App(Dialogs):
                 for widget in self.metric_blocks[key]:
                     widget.pack(**widget.saved_pack)
             if key in self.metric_titles:
-                self.metric_titles[key].config(text=p.get("name") or METRIC_NAMES[key])
+                # CPU/显卡温度块的标题就是卡片标题: 温度隐藏时退回设备名, 否则卡片会顶着一行
+                # "CPU 温度" 却看不到温度。
+                if key in DEVICE_TITLES and not p.get("visible", True):
+                    title = DEVICE_TITLES[key]
+                else:
+                    title = p.get("name") or METRIC_NAMES[key]
+                self.metric_titles[key].config(text=title)
         self.groups = dict(zip(GROUP_NAMES, (self.net_box, self.case_box, self.pump_box, *self.extra_boxes.values())))
         for key, box in self.groups.items():
             box.pref_group = key

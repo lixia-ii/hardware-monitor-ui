@@ -108,8 +108,13 @@ class Dialogs:
         close_section = self._section(general, "关闭窗口")
         close = tk.StringVar(value=self.settings["close_action"])
         for value, text in (("ask", "每次询问"), ("tray", "最小化到托盘"), ("exit", "直接退出")):
-            ttk.Radiobutton(close_section, text=text, value=value, variable=close,
-                            command=lambda: self._save_option("close_action", close.get())).pack(anchor="w")
+            radio = ttk.Radiobutton(close_section, text=text, value=value, variable=close,
+                                    command=lambda: self._save_option("close_action", close.get()))
+            if value == "tray" and not self.tray.ok:  # 托盘不可用时关闭一律退出, 别让选项点了不生效
+                radio.state(["disabled"])
+            radio.pack(anchor="w")
+        if not self.tray.ok:
+            self._hint(close_section, "当前系统托盘不可用，关闭窗口时会直接退出。")
         startup = self._section(general, "启动与悬浮窗")
         auto = tk.BooleanVar()
         auto_cb = ttk.Checkbutton(startup, text="开机自动启动，最小化到托盘", variable=auto, state="disabled")
@@ -173,14 +178,15 @@ class Dialogs:
         spin.pack(anchor="w", pady=4)
         spin.bind("<FocusOut>", save_interval)
         ttk.Label(sampling, text="默认显卡", padding=(0, 10, 0, 0)).pack(anchor="w")
+        selected_gpu = self.settings["gpu_id"] or None  # 空串按"自动选择"处理
         gpu_ids = [None] + [h for h, _ in self.gpu_list]
         gpu_names = ["自动选择"] + [n + (f"（{i + 1}）" if sum(name == n for _, name in self.gpu_list) > 1 else "")
                                   for i, (_, n) in enumerate(self.gpu_list)]
-        if self.settings["gpu_id"] and self.settings["gpu_id"] not in gpu_ids:
-            gpu_ids.append(self.settings["gpu_id"])
+        if selected_gpu and selected_gpu not in gpu_ids:
+            gpu_ids.append(selected_gpu)
             gpu_names.append("已选显卡（暂未连接）")
         gpu = ttk.Combobox(sampling, values=gpu_names, state="readonly", width=24)
-        gpu.current(gpu_ids.index(self.settings["gpu_id"]))
+        gpu.current(gpu_ids.index(selected_gpu))
         gpu.pack(fill="x", pady=4)
         def select_gpu(_):
             self.gpu_sel = gpu_ids[gpu.current()]
@@ -395,6 +401,7 @@ class Dialogs:
         gpu_note = ttk.Label(w, style="Hint.TLabel", padding=(10, 0, 10, 6))
         gpu_map = {}
         gpu_groups = {}
+        chosen_id = [None]  # 上次选中的显卡身份; 显示名会随同名卡增减变化, 身份不会
         stats = ttk.Label(w, text="", style="Hint.TLabel", padding=(10, 0))
         stats.pack(fill="x")
         stats.bind("<Configure>", lambda e: stats.configure(wraplength=max(100, e.width - 20)))
@@ -433,7 +440,7 @@ class Dialogs:
             if not w.winfo_exists():
                 return
             start, end, rows = selected_rows()
-            old_id = gpu_map.get(gpu_var.get(), (self.data or {}).get("gpu_id"))
+            old_id = gpu_map.get(gpu_var.get()) or chosen_id[0] or (self.data or {}).get("gpu_id")
             gpu_groups.clear()
             gpu_groups.update(history.gpu_groups([*snapshot["devices"].items(), *self.gpu_list]))
             old_id = next((identity for identity, (_, members) in gpu_groups.items() if old_id in members), old_id)
@@ -443,6 +450,7 @@ class Dialogs:
                             for i, (identity, (name, _)) in enumerate(gpu_groups.items())})
             gpu.configure(values=list(gpu_map))
             gpu_var.set(next((n for n, h in gpu_map.items() if h == old_id), next(iter(gpu_map), "无显卡数据")))
+            chosen_id[0] = gpu_map.get(gpu_var.get())
             selected = gpu_map.get(gpu_var.get())
             selected_ids = gpu_groups.get(selected, (None, frozenset((selected,))))[1]
             view = (metric.get(), span.get(), selected_ids)

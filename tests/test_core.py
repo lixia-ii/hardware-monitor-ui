@@ -31,6 +31,10 @@ class SettingsTests(unittest.TestCase):
         self.assertEqual(result["nic_ids"], ["nic"])
         self.assertEqual(result["interval"], .5)
 
+    def test_empty_gpu_id_means_automatic(self):
+        self.assertIsNone(config.validate({"gpu_id": ""})["gpu_id"])
+        self.assertEqual(config.validate({"gpu_id": "/gpu-nvidia/0"})["gpu_id"], "/gpu-nvidia/0")
+
     def test_atomic_failure_preserves_previous_file(self):
         with tempfile.TemporaryDirectory() as d:
             path = Path(d) / "settings.json"
