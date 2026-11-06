@@ -54,6 +54,11 @@ with patch("collector.sensors.read", side_effect=read), patch("autostart.sync"),
             assert app.data and app.data["cpu_temp"] == 70
             assert not app.data["error"], app.data["error"]
             app.show_history()
+            history_window = app.history_win
+            history_window.iconify()
+            app.root.update()
+            app.show_history()
+            assert app.history_win is history_window and history_window.state() == "normal", "History window did not restore"
             app.show_settings()
             app.show_customization()
             app.root.update_idletasks()

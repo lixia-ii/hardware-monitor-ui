@@ -360,7 +360,9 @@ class Dialogs:
 
     def show_history(self):
         if getattr(self, "history_win", None) and self.history_win.winfo_exists():
+            self.history_win.deiconify()
             self.history_win.lift()
+            self.history_win.focus_set()
             return
         w = self.history_win = tk.Toplevel(self.root)
         w.title("历史数据")
