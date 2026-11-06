@@ -365,17 +365,11 @@ class App(Dialogs):
         s.configure("TNotebook", background=BG, borderwidth=0, bordercolor=BG, lightcolor=BG, darkcolor=BG)
         s.configure("TNotebook.Tab", background=CARD, foreground=SUB, padding=("14p", "7p"),
                     bordercolor=BORDER, lightcolor=CARD, darkcolor=CARD, focuscolor=TRACK)
-        s.map("TNotebook.Tab", background=[("selected", TRACK), ("active", BORDER)], foreground=[("selected", FG)])
-        # Clam's tab border and selected expansion retain light system edges.
-        self._tab_imgs = []
-        for color in (CARD, PIN, BORDER):
-            img = tk.PhotoImage(width=1, height=1)
-            img.put(color, to=(0, 0, 1, 1))
-            self._tab_imgs.append(img)
-        s.element_create("FlatNotebook.tab", "image", self._tab_imgs[0],
-                         ("selected", self._tab_imgs[1]), ("active", self._tab_imgs[2]), sticky="nswe")
-        s.layout("TNotebook.Tab", [("FlatNotebook.tab", {"sticky": "nswe", "children": [
-            ("Notebook.padding", {"sticky": "nswe", "children": [("Notebook.label", {"sticky": "nswe"})]})]})])
+        s.map("TNotebook.Tab", background=[("selected", TRACK), ("active", BORDER)],
+              foreground=[("selected", FG)], lightcolor=[("selected", TRACK), ("active", BORDER), ("!selected", CARD)],
+              darkcolor=[("selected", TRACK), ("active", BORDER), ("!selected", CARD)],
+              bordercolor=[("selected", TRACK), ("active", BORDER), ("!selected", CARD)])
+        # Native clam drawing avoids repeatedly tiling a 1-pixel image on Windows.
         s.map("TNotebook.Tab", expand=[("selected", (0, 0, 0, 0))],
               padding=[("selected", ("14p", "7p")), ("!selected", ("14p", "7p"))])
         s.configure("Treeview", background=CARD, fieldbackground=CARD, foreground=FG,
