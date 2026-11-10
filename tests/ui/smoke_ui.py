@@ -1,33 +1,33 @@
 """Isolated GUI integration check. --preview keeps the fixture UI open for visual QA."""
 import os
 from pathlib import Path
+import socket
 import sys
 import time
 from unittest.mock import patch
 
-ROOT = Path(__file__).resolve().parents[1]
+ROOT = Path(__file__).resolve().parents[2]
 os.environ["HARDWARE_MONITOR_DATA_DIR"] = str(ROOT / ".build" / "test-data")
-sys.path.insert(0, str(ROOT / "app"))
-from test_core import SensorTests
-import config
-import diagnostics
-import monitor
-import openwrt
-import sensors
+sys.path[:0] = [str(ROOT), str(ROOT / "src")]
+from tests.support import sample_tree
+from hwmonitor import paths, settings
+from hwmonitor.core import diagnostics
+from hwmonitor.sensors import openwrt, reading
+from hwmonitor.ui import main_window
 from tkinter import ttk
 
 diagnostics.setup_logging()
 failures = []
-tree = SensorTests().tree()
+tree = sample_tree()
 tree["Children"].append({"HardwareId": "/lpc/0", "Text": "Board", "Children": [
     {"Text": "CPU Fan", "Value": "1200 RPM", "Type": "Fan"},
     {"Text": "Case Fan", "Value": "800 RPM", "Type": "Fan"}]})
 
 
-def read(gpu_id=None, nic_ids=None):
-    with patch("sensors._lhm") as lhm, patch("sensors._nvidia", return_value=[]):
+def read(gpu_id=None, nic_ids=None, source=None):
+    with patch("hwmonitor.sensors.reading._lhm") as lhm, patch("hwmonitor.sensors.nvidia.cards", return_value=[]):
         out = {"temps": [], "fans": [], "loads": [], "data": [], "extra": {}, "hw": [], "by_id": True}
-        sensors._walk(tree, None, out)
+        reading._walk(tree, None, out)
         lhm.return_value = out
         return original_read(gpu_id, nic_ids)
 
@@ -36,9 +36,12 @@ def record_error(*args):
     failures.append(str(args))
 
 
-original_read = sensors.read
-with patch("collector.sensors.read", side_effect=read), patch("autostart.sync"), patch("autostart.is_enabled", return_value=False), patch("config.load", side_effect=lambda: config.validate({})):
-    app = monitor.App()
+original_read = reading.read
+with socket.socket() as probe:  # 网页服务用空闲端口, 不与本机已有服务冲突
+    probe.bind(("127.0.0.1", 0))
+    WEB_PORT = probe.getsockname()[1]
+with patch("hwmonitor.core.collector.reading.read", side_effect=read), patch("hwmonitor.system.autostart.sync"), patch("hwmonitor.system.autostart.is_enabled", return_value=False), patch("hwmonitor.system.pawnio.status", return_value="ok"), patch("hwmonitor.settings.load", side_effect=lambda: settings.validate({"web": {"port": WEB_PORT}})):
+    app = main_window.MainWindow()
     app.root.title("硬件监控 · 开发验证")
     app.root.report_callback_exception = record_error
     now = time.time()
@@ -71,7 +74,7 @@ with patch("collector.sensors.read", side_effect=read), patch("autostart.sync"),
                     if found is not None:
                         return found
             def row_titled(page, title):
-                label = find(app.settings_pages[page], monitor.tk.Label, lambda w: w.cget("text") == title)
+                label = find(app.settings_pages[page], main_window.tk.Label, lambda w: w.cget("text") == title)
                 assert label is not None, f"Missing settings row: {title}"
                 return label.master.master
             # Sidebar navigation shows exactly one page; Ctrl+Tab cycles pages.
@@ -107,9 +110,18 @@ with patch("collector.sensors.read", side_effect=read), patch("autostart.sync"),
             url_entry.delete(0, "end")
             url_entry.insert(0, "ftp://router")
             url_entry.event_generate("<FocusOut>")
-            assert url_entry.get() == config.DEFAULTS["router"]["url"] and url_row.desc.cget("fg") == monitor.RED, "Invalid URL accepted"
+            assert url_entry.get() == settings.DEFAULTS["router"]["url"] and url_row.desc.cget("fg") == main_window.RED, "Invalid URL accepted"
             row_titled("router", "显示路由器状态").switch.invoke()
             assert not app.settings["router"]["enabled"]
+            app.settings_select("general")
+            app.root.update()
+            lan_switch = row_titled("general", "允许局域网访问").switch
+            assert lan_switch.instate(["disabled"]) and app.web.server is None, "Web service should start disabled"
+            row_titled("general", "启用网页服务").switch.invoke()
+            assert app.settings["web"]["enabled"] and lan_switch.instate(["!disabled"]) and app.web.server is not None
+            assert f"127.0.0.1:{WEB_PORT}/data.json" in row_titled("general", "访问地址").desc.cget("text")
+            row_titled("general", "启用网页服务").switch.invoke()
+            assert not app.settings["web"]["enabled"] and app.web.server is None
             app.settings_select("general")
             app.show_customization()
             app.root.update_idletasks()
@@ -259,12 +271,12 @@ with patch("collector.sensors.read", side_effect=read), patch("autostart.sync"),
             app.render(app.data)
             if "--preview" not in sys.argv:
                 for window in app.root.winfo_children():
-                    if isinstance(window, monitor.tk.Toplevel):
+                    if isinstance(window, main_window.tk.Toplevel):
                         window.destroy()
                 from tkinter import filedialog
                 from unittest.mock import patch
                 payload = {"error": None, "model": "Fixture PC", "os": "Windows", "details": []}
-                with patch.object(filedialog, "asksaveasfilename", return_value=str(config.DATA / "report.json")), patch("dialogs.hwinfo.load", return_value=payload):
+                with patch.object(filedialog, "asksaveasfilename", return_value=str(paths.DATA / "report.json")), patch("hwmonitor.ui.settings_dialog.hwinfo.load", return_value=payload):
                     app.export_diagnostics()
                 app.root.after(1200, finish)
         except Exception as e:
@@ -273,7 +285,7 @@ with patch("collector.sensors.read", side_effect=read), patch("autostart.sync"),
 
     def finish():
         try:
-            assert (config.DATA / "report.json").exists()
+            assert (paths.DATA / "report.json").exists()
             assert app.collector.is_alive()
         except Exception as e:
             failures.append(repr(e))

@@ -1,4 +1,4 @@
-"""生成 app/app.ico (风扇图标): python scripts/make_icon.py。需要 Pillow。"""
+"""生成 src/hwmonitor/ui/assets/app.ico (风扇图标): python scripts/make_icon.py。需要 Pillow。"""
 import math
 import os
 from PIL import Image, ImageDraw
@@ -20,4 +20,4 @@ for i in range(4):
 d.ellipse((cx - 90, cy - 90, cx + 90, cy + 90), fill=(235, 240, 255, 255))
 d.ellipse((cx - 36, cy - 36, cx + 36, cy + 36), fill=(30, 34, 52, 255))
 
-img.save(os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "app", "app.ico"), sizes=[(16, 16), (24, 24), (32, 32), (48, 48), (64, 64), (128, 128), (256, 256)])
+img.save(os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "src", "hwmonitor", "ui", "assets", "app.ico"), sizes=[(16, 16), (24, 24), (32, 32), (48, 48), (64, 64), (128, 128), (256, 256)])

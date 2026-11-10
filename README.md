@@ -4,29 +4,33 @@
 
 ## 说明
 
-本项目**只是读取 [LibreHardwareMonitor](https://github.com/LibreHardwareMonitor/LibreHardwareMonitor) 提供的数据并展示**,自己不直接访问硬件、不带任何驱动。传感器的读取全部由 LibreHardwareMonitor 完成,本项目通过它内置 Remote Web Server 的 `http://127.0.0.1:8085/data.json` 获取数据。
+本项目是在开源项目 [LibreHardwareMonitor](https://github.com/LibreHardwareMonitor/LibreHardwareMonitor) 的基础上开发的。程序内置并直接调用它的硬件读取库 `LibreHardwareMonitorLib`,不需要再单独安装或启动 LibreHardwareMonitor,运行时只有本程序一个进程。
 
-- LibreHardwareMonitor 开源地址:https://github.com/LibreHardwareMonitor/LibreHardwareMonitor
-- `LibreHardwareMonitor.zip` 是该项目的程序文件打包,放在本仓库的 [Releases](https://github.com/lixia-ii/hardware-monitor-ui/releases) 页面(不在 git 里),版权归原作者所有,以 [MPL-2.0](THIRD_PARTY/LibreHardwareMonitor-MPL-2.0.txt) 许可证发布,源码见上面的仓库。你也可以自行从上面的仓库下载新版本,按相同的目录结构打包替换。
+- **复用的部分**:CPU、显卡、主板、内存、硬盘、网卡等全部硬件的识别与传感器读取,均由 `LibreHardwareMonitorLib` 完成(内置 0.9.6 版官方发布的程序集,未做修改)。本项目通过 [pythonnet](https://github.com/pythonnet/pythonnet) 在进程内加载它。
+- **本项目实现的部分**:界面、告警、历史、悬浮窗、网页服务,以及把传感器整理成与 LibreHardwareMonitor `data.json` 相同的结构(格式参照其源码 `HttpServer.cs` / `SensorNode.cs`)。
+- **PawnIO 驱动**:读取 CPU 温度和主板风扇需要 PawnIO 驱动。程序附带官方安装程序 `PawnIO_setup.exe`(作者 namazso,来自 LibreHardwareMonitor 仓库,[GPL-2.0](licenses/PawnIO-GPL-2.0.txt),源码 https://github.com/namazso/PawnIO),检测到未安装时提示安装。
+- LibreHardwareMonitor 开源地址:https://github.com/LibreHardwareMonitor/LibreHardwareMonitor ,版权归原作者所有,以 [MPL-2.0](licenses/LibreHardwareMonitor-MPL-2.0.txt) 许可证发布。
+- 升级硬件库:从上面的仓库下载新版本,用其中的 `LibreHardwareMonitorLib.dll` 及其依赖程序集覆盖 `vendor/LibreHardwareMonitor/`(便携包中为 EXE 旁的 `LibreHardwareMonitor/`)里的同名文件。
 
 ## 使用
 
-1. 双击 `start.bat`。界面会请求一次 UAC 管理员确认，以便启动和关闭自己管理的 LibreHardwareMonitor:
-   - 如果当前目录下没有 `runtime/LibreHardwareMonitor/`,会先从 Releases 自动下载到 `runtime/cache/LibreHardwareMonitor.zip` 并解压到 `runtime/`(下载失败时按提示手动下载,放到 `runtime/cache/` 即可)(压缩包内已预置:开启 Web Server、启动最小化到托盘,仅监听 127.0.0.1);
-   - 界面先取得单实例锁，如果 LibreHardwareMonitor 没在运行，再最小化启动它；
-   - 关闭监控窗口时，只关闭本次由界面启动并持有进程句柄的 LibreHardwareMonitor，先正常关闭，等待最多 4 秒后才终止；已在运行的实例不会被关闭。
+1. 双击 `start.bat`(或直接运行 `HardwareMonitorUI.exe`)。读取硬件需要管理员权限,界面会请求一次 UAC 确认:
+   - 启动后在后台初始化硬件传感器(约几秒),期间提示条显示"正在初始化硬件传感器…";
+   - 首次运行若未安装 PawnIO 驱动,会询问是否安装(见下文);
+   - 退出时关闭硬件库、释放驱动,不会残留其他进程。
 2. 最小化窗口会隐藏到右下角托盘;单击托盘图标恢复窗口,右键可退出,鼠标悬停可直接看 CPU/显卡温度。点关闭按钮时默认询问"退出"还是"最小化到托盘",可勾选记住,之后在底栏 **设置** 里修改。程序只允许运行一个,重复启动会唤出已打开的窗口。
 
 主窗口大小和位置由你决定并自动记住，下次启动恢复（原显示器已断开时回到主屏居中）；读数、分组出现或收起都不会改变窗口大小。底部工具栏（设置、置顶、悬浮窗、历史、硬件信息）固定在窗口底部，卡片区内容超出时右侧浮出细滚动条，可用鼠标滚轮滚动，滚动条出现与否都不改变卡片宽度。路由器、机箱风扇、水冷泵及各温度分组点击标题行（左侧箭头）即可收起，收起后标题行右侧仍显示摘要（如最高温度、风扇转速范围）。多显卡时点击显卡卡片右上角的型号标签，从下拉菜单中选择要显示的显卡。尺寸随系统 DPI 缩放。
-3. **设置 → 常规 → 开机自动启动**:登录后自动在托盘运行,并一并启动 LibreHardwareMonitor。通过任务计划程序(任务名 `HardwareMonitorUI`,以最高权限运行)实现,开启或关闭时确认一次 UAC,之后开机不再弹出。移动程序目录后,下次启动会自动修正任务里的路径。
-4. 源码运行需要 Python 3（推荐 3.13，运行界面仅用标准库，无需安装依赖）；便携 EXE 版本无需安装 Python。仅重新生成图标的 `make_icon.py` 需要 Pillow。
+3. **设置 → 常规 → 开机自动启动**:登录后自动在托盘运行并开始监控。通过任务计划程序(任务名 `HardwareMonitorUI`,以最高权限运行)实现,开启或关闭时确认一次 UAC,之后开机不再弹出。移动程序目录后,下次启动会自动修正任务里的路径。
+4. 源码运行需要 Python 3.11 以上（推荐 3.13），首次运行前在仓库根目录执行 `pip install -e .` 安装依赖 pythonnet（用于加载 .NET 硬件库，系统需有 Windows 10/11 自带的 .NET Framework 4.7.2 以上）；之后运行 `start.bat`，或 `python -m hwmonitor`。便携 EXE 已内置，无需安装 Python。
+5. **设置 → 常规 → 网页服务**（默认关闭）：开启后在 `http://127.0.0.1:8085/data.json` 提供与 LibreHardwareMonitor 网页服务格式相同的数据，原来接 LibreHardwareMonitor 的工具可直接使用；端口可改。再打开 **允许局域网访问** 后，同一局域网的设备可通过 `http://本机IP:端口/data.json` 访问，设置页会列出可用地址；程序会添加一条仅允许本地子网访问的防火墙规则，关闭时自动删除。接口只读。
 
 ## 告警、历史与悬浮窗
 
 - **温度告警**：在 **设置 → 告警** 中设置 CPU/显卡阈值、持续超温时间、恢复温差及提醒间隔。默认持续超温 10 秒才提醒，降到阈值以下 5°C 才解除；短暂回落和传感器缺失不会清除提醒冷却时间。托盘不可用时在主界面提示。
 - **风扇异常检测**：在 **设置 → 告警** 中单独开启（默认关闭），设置最低 RPM 和持续时间。只有对应设备持续高温且风扇低于设定转速时才提醒；无 RPM 传感器、仅有百分比、显卡低温停转均不触发。
 - **历史曲线**：点击底栏 **历史** 查看温度、利用率和网速。默认每 5 秒取样，刷新间隔更长时按实际采集节奏记录，保留最近 24 小时，支持 1 小时/24 小时范围、显卡选择、最高值、鼠标悬停读数及 CSV 导出。“显示间隔”默认自动：1 小时视图按 30 秒、24 小时视图按 5 分钟分段，每段保留首尾、最低与最高采样点，按真实时间顺序连成普通折线，减少点数并保留尖峰，不绘制菱形或气泡标记；也可手动选择原始、30 秒、1 分钟、5 分钟或 15 分钟。悬停曲线可查看原始读数和时间，最高值与 CSV 保留原始数据。缺失或长时间断连处留空，精简绘制不会跨越断点；切换显卡、网卡不会混用其他设备的曲线。
-- 历史图按指标上下分图，CPU、显卡、内存、显存各占独立绘图区，避免曲线重叠；时间轴和悬停参考线对齐，各图单独显示最高值，利用率统一采用 0–100% 刻度。单显卡直接在图例中显示型号，多显卡选择仅影响显卡与显存曲线；网络视图分别显示上传、下载。能够唯一对应的 LHM 与 NVIDIA 历史记录归为同一个显卡选项，曲线、悬停读数和 CSV 导出会包含两种来源的数据；同型号多卡无法唯一对应时保持独立。
+- 历史图按指标上下分图，CPU、显卡、内存、显存各占独立绘图区，避免曲线重叠；时间轴和悬停参考线对齐，各图单独显示最高值，利用率统一采用 0–100% 刻度。单显卡直接在图例中显示型号，多显卡选择仅影响显卡与显存曲线；网络视图分别显示上传、下载。能够唯一对应的硬件库与 NVIDIA 历史记录归为同一个显卡选项，曲线、悬停读数和 CSV 导出会包含两种来源的数据；同型号多卡无法唯一对应时保持独立。
 - **重启恢复**：默认将历史写入`data/history.sqlite3`，启动时自动恢复。可在 **设置 → 数据与关于** 关闭“保存历史到本地”；关闭后仍保留本次运行的内存历史，已有本地数据保留并在超过 24 小时后淘汰。
 - **悬浮窗**:点击底栏 **悬浮窗** 或在 **设置** 中开启。它会置顶显示 CPU/显卡温度与利用率;拖动标题栏可调整位置,右上角 × 关闭。位置和开关状态会在下次启动时恢复。
 
@@ -65,7 +69,7 @@ uci commit prometheus-node-exporter-lua
 - **设置 → 监控**：调整刷新间隔（0.5–30 秒）、固定默认显卡、选择网速统计方式。默认自动汇总物理网卡；切换为“手动选择网卡”后可勾选 VPN/虚拟网卡，也可全部取消。显卡卡片上的切换选择也会保存。
 - **自定义显示、名称和顺序**：在 **设置 → 监控 → 自定义…** 中先选择 CPU、显卡、可选分组或具体传感器分组，再修改名称、显示状态（双击或按空格切换，隐藏项变暗）和顺序，最后点击“保存”；“恢复默认”可还原当前分组。切换选中项会保留待保存的编辑，“取消”会放弃本次编辑。动态传感器按设备身份保存偏好，其他设备断连或顺序变化不会影响配置。隐藏不影响采集、告警和历史记录。
 - **设置窗口**：参考 Windows 11 设置，左侧导航切换“常规 / 监控 / 告警 / 路由器 / 数据与关于”（Ctrl+Tab 切换页面）。每项设置一行，左侧是名称和说明，右侧是开关、下拉框或带单位的数值框；修改即时生效并保存，依赖总开关的选项在总开关关闭时置灰，输入超出范围会自动修正，无效的路由器地址会提示并恢复。自定义显示单独确认保存。
-- **多显卡断连恢复**：固定显卡缺失时保留空值，避免自动套用另一块显卡的数据。NVIDIA UUID 选择在 LHM 恢复后继续有效；同型号多卡无法确认身份时，仅使用 UUID 对应的读数。
+- **多显卡断连恢复**：固定显卡缺失时保留空值，避免自动套用另一块显卡的数据。NVIDIA UUID 选择在硬件库初始化完成后继续有效；同型号多卡无法确认身份时，仅使用 UUID 对应的读数。
 - **设置 → 数据与关于 → 导出诊断报告**：导出 JSON 或纯文本，包含程序版本、硬件概览、当前读数、最近 100 条本次运行的告警及最近采集耗时。报告不导出环境变量、异常中的私有路径或原始日志。
 - 本地滚动日志为 `data/monitor.log`，最多 3 份，每份 512 KiB。配置用临时文件和原子替换保存；格式错误时使用默认值，写入失败会在界面提示。历史数据库不可用时退回内存历史并提示。
 - 使用一个常驻采集线程；主窗口隐藏时停止更新主界面控件，但继续采集、告警和更新悬浮窗。连接失败后重试间隔逐步延长至 30 秒，进程状态查询缓存 10 秒，NVIDIA 兜底缓存 5 秒。新选择或设置可唤醒采集线程。
@@ -74,7 +78,7 @@ uci commit prometheus-node-exporter-lua
 
 ## 便携程序与开发验证
 
-便携包解压后运行 `start.bat`，首次自动准备 LibreHardwareMonitor，之后可直接运行 `HardwareMonitorUI.exe`。移动时保留整个目录；任务计划程序同时兼容源码与 EXE。便携包不含 Python 安装程序，也不内置 LibreHardwareMonitor 驱动。
+便携包解压后运行 `start.bat` 或 `HardwareMonitorUI.exe` 即可，目录为 `HardwareMonitorUI.exe`、`LibreHardwareMonitor/`（硬件库）、`licenses/` 和运行后生成的 `data/`。移动时保留整个目录；任务计划程序同时兼容源码与 EXE。
 
 在 Windows PowerShell 中构建（首次需要联网下载构建依赖）：
 
@@ -82,66 +86,70 @@ uci commit prometheus-node-exporter-lua
 ./scripts/build.ps1
 ```
 
-输出 `dist/HardwareMonitorUI.exe` 与 `dist/HardwareMonitorUI-windows-x64.zip`。构建依赖单独安装到 `.build/venv/`；版本固定在 `scripts/requirements-build.txt`，源码运行仍无第三方依赖。
+输出 `dist/HardwareMonitorUI.exe` 与 `dist/HardwareMonitorUI-windows-x64.zip`。构建环境单独安装到 `.build/venv/`；运行依赖和构建依赖统一在 `pyproject.toml` 中固定版本（构建用 `pip install -e ".[build]"`）。
 
 ```powershell
-python -m unittest discover -s tests -v
-python tests/smoke_ui.py
-./dist/HardwareMonitorUI.exe --self-test
+python -m unittest discover -s tests -t . -v   # 单元测试 (tests/unit, 按模块分文件)
+python tests/ui/smoke_ui.py                    # 界面集成测试
+./dist/HardwareMonitorUI.exe --self-test       # 打包后自检
 ```
 
-GUI 集成测试使用隔离数据和模拟传感器，覆盖主界面、17,280 个历史点、设置、自定义、悬浮窗、导出和退出。EXE 自检使用独立实例标识，在 EXE 旁的 `.build/self-test/self-test.json` 写入结果，自动退出，不启动或关闭外部 LibreHardwareMonitor。GitHub Actions 在 Windows 上执行测试和构建，可从工作流产物下载便携包。
+GUI 集成测试使用隔离数据和模拟传感器，覆盖主界面、17,280 个历史点、设置（含网页服务）、自定义、悬浮窗、导出和退出；硬件库的数据转换、网页服务和 PawnIO 检测用模拟对象测试，不依赖真实硬件。EXE 自检使用独立实例标识，检查 .NET 硬件库能否加载（不打开硬件），在 EXE 旁的 `.build/self-test/self-test.json` 写入结果后自动退出。GitHub Actions 在 Windows 上执行测试和构建，可从工作流产物下载便携包。
 
 ## 首次运行的 PawnIO 提示
 
-首次启动会弹出 `PawnIO is not installed, do you want to install it?`,随后还有一个 `PawnIO Setup` 英文免责声明。
+首次启动若未安装 PawnIO(或版本低于 2.0),会弹出"安装 PawnIO 驱动"提示,点 **安装** 后运行随附的官方安装程序,其中有一个 `PawnIO Setup` 英文免责声明。
 
 - **这是什么**:PawnIO 是 LibreHardwareMonitor 使用的开源驱动,用来读取 CPU 温度和主板风扇转速,不装这两项就读不到。英文免责声明是开源软件的通用条款("按现状提供,风险自负")。
-- **怎么做**:两个窗口都点 **确定**,出现 UAC 提示选 **是**。只需装一次。
-- **装完仍读不到**:关闭 LibreHardwareMonitor 后重新运行 `start.bat`;若还不行,检查 Windows 安全中心的"内存完整性"是否拦截了驱动。
+- **怎么做**:在安装程序里点 **确定** 即可,只需装一次。装好后程序自动重新初始化硬件,无需重启。
+- **暂不安装**:其他读数照常显示,提示条会提醒并提供 **安装** 按钮,随时可以再装。开机自启时不弹窗,只在提示条提醒。
+- **装完仍读不到**:退出程序后重新运行;若还不行,检查 Windows 安全中心的"内存完整性"是否拦截了驱动。
 
 ## 注意
 
-- 监控窗口提示"未连接 LibreHardwareMonitor"时,在 LibreHardwareMonitor 里勾选 **Options → Remote Web Server → Run**(压缩包内已预置开启,自行替换版本后需手动勾选)。
-- 读取 CPU 温度和风扇转速需要管理员权限,这是 LibreHardwareMonitor 的要求。
-- 未连接 LibreHardwareMonitor 时,显卡温度、利用率、显存占用和风扇百分比会由 `nvidia-smi` 兜底(仅 NVIDIA)。
+- 读取 CPU 温度和风扇转速需要管理员权限,这是硬件库的要求。
+- 硬件传感器初始化期间或初始化失败时,显卡温度、利用率、显存占用和风扇百分比会由 `nvidia-smi` 兜底(仅 NVIDIA);初始化失败会在提示条说明原因,并每分钟重试。
 - 网速是所有物理网卡的上传/下载之和,Hyper-V、WSL、虚拟机、VPN 等虚拟网卡不计入,避免重复统计。
 - 能显示哪些风扇,取决于主板是否被 LibreHardwareMonitor 识别。部分品牌机(OEM 主板)没有风扇传感器,CPU 风扇和机箱风扇会显示为空。
 - 硬盘/内存/网卡温度会自动排除厂商的告警、临界阈值,只显示当前温度。
 - 多块显卡时优先显示独显的温度和风扇,核显不参与。
 - CPU 温度优先取 `CPU Package`(Intel)/ `Core (Tdie)`(AMD);老款 Ryzen 的 Tctl 有 10~20℃ 偏移,有 Tdie 时不用 Tctl。
-- LibreHardwareMonitor 设为华氏度时会自动换算,界面统一显示摄氏度。
 - 主板风扇名称含 "CPU" 才算 CPU 风扇;名称含 "Pump" 的归为水冷泵,单独显示(检测到时才出现);其余转速不为 0 的归为机箱风扇。
-- 硬件类别按 LibreHardwareMonitor 提供的 `HardwareId` 识别(如 `/intelcpu/0`、`/gpu-nvidia/0`、`/nvme/1`);旧版本没有该字段时退回按图标和名称识别。
-- 调试传感器读取:`python app\sensors.py`。
+- 硬件类别按硬件库提供的 `HardwareId` 识别(如 `/intelcpu/0`、`/gpu-nvidia/0`、`/nvme/1`)。
+- 调试传感器读取(管理员终端,已执行 `pip install -e .`):`python -m hwmonitor.sensors.reading`。
 
 ## 目录结构
 
 ```text
 hardware-monitor-ui/
 ├─ start.bat                 日常启动入口
-├─ README.md                 使用说明
-├─ LICENSE                   本项目 MIT 许可证
-├─ app/                      程序源码和 app.ico
-├─ scripts/                  开发工具
-│  ├─ build.ps1              构建 Windows 便携包
-│  ├─ requirements-build.txt 构建依赖
-│  └─ make_icon.py           重新生成 app/app.ico（需要 Pillow）
-├─ tests/                    核心回归与隔离 GUI 集成测试
-├─ docs/
-│  └─ PLAN.md                功能计划与完成状态
-├─ THIRD_PARTY/              第三方许可证
+├─ pyproject.toml            项目信息、版本来源与依赖（运行 / 构建）
+├─ README.md  LICENSE        使用说明、本项目 MIT 许可证
+├─ src/hwmonitor/            应用代码（Python 包）
+│  ├─ __main__.py            入口：python -m hwmonitor，或直接运行本文件
+│  ├─ bootstrap.py           启动流程：日志、提权、单实例、DPI、自检
+│  ├─ paths.py  settings.py  目录位置；设置的默认值、校验与保存
+│  ├─ core/                  业务逻辑：采集线程、告警、历史、诊断
+│  ├─ sensors/               数据来源：硬件库封装、读数解析、nvidia-smi、路由器、硬件信息
+│  ├─ system/                系统集成：提权、开机自启、托盘、PawnIO、网页服务
+│  └─ ui/                    界面：主窗口、悬浮窗、设置/自定义/历史/信息窗口、主题、图标
+├─ vendor/LibreHardwareMonitor/  内置第三方程序集（LibreHardwareMonitorLib 0.9.6 等）与 PawnIO_setup.exe，原样存放
+├─ licenses/                 第三方许可证（LibreHardwareMonitor、PawnIO）
+├─ tests/
+│  ├─ unit/                  单元测试，按模块分文件（test_reading、test_lhm、test_webserver …）
+│  ├─ ui/smoke_ui.py         隔离数据的界面集成测试
+│  ├─ support.py             测试共用的模拟传感器数据
+│  └─ fixtures/              测试样例数据
+├─ scripts/                  build.ps1 构建便携包；make_icon.py 重新生成图标（需要 Pillow）
+├─ docs/                     ARCHITECTURE.md 模块分层与数据流；PLAN.md 功能计划
 ├─ .github/workflows/        Windows CI
 ├─ data/                     本地设置、历史数据库和滚动日志，不提交 Git
-├─ runtime/                  第三方运行文件，不提交 Git
-│  ├─ LibreHardwareMonitor/  解压后的硬件监控程序
-│  └─ cache/                 下载的 LibreHardwareMonitor.zip
 ├─ dist/                     最新 EXE、便携 ZIP 及随包文档，不提交 Git
-└─ .build/                   构建环境、中间文件、自检数据和旧产物归档，不提交 Git
+└─ .build/                   构建环境、中间文件、自检数据，不提交 Git
 ```
 
-平时只需运行根目录的 `start.bat`。开发构建运行 `./scripts/build.ps1`，功能计划见 [docs/PLAN.md](docs/PLAN.md)。设置和历史已集中到 `data/`；旧布局的数据在启动取得单实例锁后自动迁移，新目录已有数据时不覆盖。构建和测试不会再在根目录生成数据库、日志或 spec 文件。
+平时只需运行根目录的 `start.bat`。代码结构和模块依赖关系见 [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md)，功能计划见 [docs/PLAN.md](docs/PLAN.md)。设置和历史已集中到 `data/`；旧布局的数据在启动取得单实例锁后自动迁移，新目录已有数据时不覆盖。构建和测试不会再在根目录生成数据库、日志或 spec 文件。
 
 ## 许可证
 
-本项目代码以 [MIT](LICENSE) 许可证发布。LibreHardwareMonitor 以 [MPL-2.0](THIRD_PARTY/LibreHardwareMonitor-MPL-2.0.txt) 发布,不包含在本仓库代码中。
+本项目代码以 [MIT](LICENSE) 许可证发布。`vendor/LibreHardwareMonitor/` 目录中的第三方文件保持原样、按各自许可证分发:LibreHardwareMonitorLib 以 [MPL-2.0](licenses/LibreHardwareMonitor-MPL-2.0.txt) 发布(源码 https://github.com/LibreHardwareMonitor/LibreHardwareMonitor ),其依赖程序集(HidSharp、DiskInfoToolkit、RAMSPDToolkit、BlackSharp、System.*)随 LibreHardwareMonitor 发布包一同分发;PawnIO 安装程序以 [GPL-2.0](licenses/PawnIO-GPL-2.0.txt) 发布(源码 https://github.com/namazso/PawnIO )。便携 EXE 内含 pythonnet 与 clr_loader(MIT)。

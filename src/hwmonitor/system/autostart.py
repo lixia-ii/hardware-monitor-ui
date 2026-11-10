@@ -1,7 +1,7 @@
 """开机自启动: 用"任务计划程序"在登录时以最高权限运行。
 
-LibreHardwareMonitor 需要管理员权限, 写注册表 Run 项的话每次开机都会弹 UAC; 计划任务勾选"最高权限"后开机不弹,
-只在开启/关闭这个选项时确认一次 UAC。任务启动的是 monitor.py --autostart: 隐藏到托盘, 并顺带拉起 LibreHardwareMonitor。
+读取硬件传感器需要管理员权限, 写注册表 Run 项的话每次开机都会弹 UAC; 计划任务勾选"最高权限"后开机不弹,
+只在开启/关闭这个选项时确认一次 UAC。任务启动的是 hwmonitor/__main__.py --autostart: 隐藏到托盘并开始监控。
 """
 import ctypes
 import os
@@ -11,7 +11,7 @@ import tempfile
 from xml.sax.saxutils import escape
 
 TASK = "HardwareMonitorUI"
-ENTRY = os.path.abspath(sys.executable) if getattr(sys, "frozen", False) else os.path.join(os.path.dirname(os.path.abspath(__file__)), "monitor.py")
+ENTRY = os.path.abspath(sys.executable) if getattr(sys, "frozen", False) else os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "__main__.py")
 _NO_WINDOW = subprocess.CREATE_NO_WINDOW
 
 

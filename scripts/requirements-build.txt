@@ -1,2 +1,0 @@
-# Only needed to build the Windows executable, never needed by the source app.
-pyinstaller==6.22.3

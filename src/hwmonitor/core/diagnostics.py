@@ -6,13 +6,13 @@ import platform
 import sys
 import time
 
-import config
+from hwmonitor import __version__, paths
 
 
 def setup_logging():
     try:
-        config.DATA.mkdir(parents=True, exist_ok=True)
-        handler = RotatingFileHandler(config.DATA / "monitor.log", maxBytes=512 * 1024, backupCount=2, encoding="utf-8")
+        paths.DATA.mkdir(parents=True, exist_ok=True)
+        handler = RotatingFileHandler(paths.DATA / "monitor.log", maxBytes=512 * 1024, backupCount=2, encoding="utf-8")
     except OSError:
         handler = logging.NullHandler()
     logging.basicConfig(level=logging.INFO, handlers=[handler],
@@ -27,7 +27,7 @@ def report(data, hardware, events, stats):
     hardware = dict(hardware or {})
     if hardware.get("error"):
         hardware = {"error": "硬件概览读取失败"}
-    return {"version": config.VERSION, "exported_at": time.strftime("%Y-%m-%d %H:%M:%S"),
+    return {"version": __version__, "exported_at": time.strftime("%Y-%m-%d %H:%M:%S"),
             "system": platform.system() + " " + platform.release(), "python": platform.python_version(),
             "hardware": hardware, "readings": readings, "recent_alerts": list(events), "collection": stats}
 

@@ -1,18 +1,14 @@
-"""Portable paths, validated settings and atomic writes (standard library only)."""
+"""用户设置: 默认值、字段校验与原子写入 (保存在数据目录的 settings.json)。"""
 import copy
 import json
 import logging
 import math
 import os
 from pathlib import Path
-import sys
 import tempfile
 
-VERSION = "0.2.0"
-BASE = Path(sys.executable).resolve().parent if getattr(sys, "frozen", False) else Path(__file__).resolve().parent.parent
-DATA = Path(os.environ.get("HARDWARE_MONITOR_DATA_DIR", BASE / "data"))
-RUNTIME = BASE / "runtime"
-RESOURCE = Path(__file__).resolve().parent
+from hwmonitor import paths
+
 DEFAULT_ALERTS = {"enabled": True, "cpu_temp": 85, "gpu_temp": 85, "cooldown": 300,
                   "duration": 10, "hysteresis": 5, "fan_enabled": False,
                   "fan_min": 300, "fan_duration": 30}
@@ -20,25 +16,8 @@ DEFAULTS = {"close_action": "ask", "collapsed": [], "floating": {"enabled": Fals
             "alerts": DEFAULT_ALERTS, "interval": 1.0, "gpu_id": None, "nic_ids": None,
             "display": {}, "history_enabled": True,
             "router": {"enabled": False, "url": "http://192.168.1.1:9100/metrics", "nic": None},
+            "web": {"enabled": False, "lan": False, "port": 8085},
             "window": None}
-
-
-def migrate_legacy_data(base=None, data=None):
-    """After acquiring the instance lock, move old portable data without overwriting files."""
-    if base is None and "HARDWARE_MONITOR_DATA_DIR" in os.environ:
-        return
-    base, data = Path(base or BASE), Path(data or DATA)
-    if base.resolve() == data.resolve():
-        return
-    migrate_db = not (data / "history.sqlite3").exists()
-    names = ("settings.json", "history.sqlite3", "history.sqlite3-wal", "history.sqlite3-shm",
-             "monitor.log", "monitor.log.1", "monitor.log.2")
-    for name in names:
-        source, target = base / name, data / name
-        if not source.exists() or target.exists() or (name.startswith("history.") and not migrate_db):
-            continue
-        data.mkdir(parents=True, exist_ok=True)
-        source.replace(target)
 
 
 def number(value, default, low, high):
@@ -73,6 +52,10 @@ def validate(raw):
             out["router"]["url"] = url.strip()[:200]
         nic = router.get("nic")
         out["router"]["nic"] = nic if isinstance(nic, str) and nic else None
+    web = raw.get("web")
+    if isinstance(web, dict):
+        out["web"] = {"enabled": web.get("enabled") is True, "lan": web.get("lan") is True,
+                      "port": int(number(web.get("port"), 8085, 1024, 65535))}
     f = raw.get("floating")
     if isinstance(f, dict):
         out["floating"] = {"enabled": f.get("enabled") is True,
@@ -105,7 +88,7 @@ def validate(raw):
 
 def load(path=None):
     try:
-        return validate(json.loads(Path(path or DATA / "settings.json").read_text(encoding="utf-8")))
+        return validate(json.loads(Path(path or paths.DATA / "settings.json").read_text(encoding="utf-8")))
     except FileNotFoundError:
         return validate({})
     except (OSError, ValueError):
@@ -114,7 +97,7 @@ def load(path=None):
 
 
 def save(settings, path=None):
-    path = Path(path or DATA / "settings.json")
+    path = Path(path or paths.DATA / "settings.json")
     path.parent.mkdir(parents=True, exist_ok=True)
     temp = None
     try:

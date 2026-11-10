@@ -1,13 +1,10 @@
-"""读取硬件传感器: 优先 LibreHardwareMonitor 的 data.json, GPU 用 nvidia-smi 兜底。"""
+"""读取硬件传感器: 解析内置 LibreHardwareMonitorLib 输出的 data.json 结构树, GPU 用 nvidia-smi 兜底。"""
 import json
 import logging
 import re
-import shutil
-import subprocess
-import time
-import urllib.request
 
-LHM_URL = "http://127.0.0.1:8085/data.json"
+from hwmonitor.sensors import lhm, nvidia
+
 _NUM = re.compile(r"-?\d+(?:[.,]\d+)?")
 
 
@@ -223,115 +220,55 @@ def _main_gpu(out, want=None):
     return min(ids, key=lambda h: (-load(h), integrated(h), h))
 
 
-def _lhm():
-    with urllib.request.urlopen(LHM_URL, timeout=1.5) as r:
-        raw = r.read()
-    tree = json.loads(raw)
-    out = {"temps": [], "fans": [], "loads": [], "data": [], "extra": {}, "hw": [], "by_id": b'"HardwareId"' in raw}
+def _has_hwid(node):
+    return "HardwareId" in node or any(_has_hwid(c) for c in node.get("Children", []))
+
+
+def parse_tree(tree):
+    out = {"temps": [], "fans": [], "loads": [], "data": [], "extra": {}, "hw": [], "by_id": _has_hwid(tree)}
     _walk(tree, None, out)
     return out
 
 
-_nv_cache = (0.0, [])
-
-
-def _num(s):
-    try:
-        return float(s)
-    except ValueError:  # "[N/A]" 等
-        return None
-
-
-def _nvidia():
-    """nvidia-smi 兜底: 返回每块卡的 [(名称, 温度, 风扇%, 利用率%, 显存已用, 显存总量 (字节))]。结果缓存 5 秒, 避免每秒拉起一个进程。"""
-    global _nv_cache
-    if time.monotonic() - _nv_cache[0] < 5:
-        return _nv_cache[1]
-    result = []
-    exe = shutil.which("nvidia-smi")
-    if exe:
-        try:
-            res = subprocess.run(
-                [exe, "--query-gpu=name,temperature.gpu,fan.speed,utilization.gpu,memory.used,memory.total,uuid", "--format=csv,noheader,nounits"],
-                capture_output=True, text=True, timeout=2,
-                creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0))
-            for line in res.stdout.strip().splitlines():
-                name, t, f, u, mu, mt, uuid = [x.strip() for x in line.rsplit(",", 6)]
-                mu, mt = _num(mu), _num(mt)  # 单位 MiB
-                result.append((name, _num(t), _num(f), _num(u),
-                               mu and mu * 1024 ** 2, mt and mt * 1024 ** 2, uuid))
-        except (OSError, subprocess.SubprocessError, ValueError):
-            pass
-    _nv_cache = (time.monotonic(), result)
-    return result
-
-
-def _nvidia_for(gpu_name, gpu_id=None):
-    """取与 LibreHardwareMonitor 选中的显卡同名的那块 N 卡; 未连接 LHM (gpu_name 为 None) 时取第一块。"""
-    cards = _nvidia()
-    if gpu_id and gpu_id.startswith("nvidia:"):
-        return next((c for c in cards if "nvidia:" + c[6] == gpu_id), None)
-    if gpu_name is None:
-        if gpu_id:
-            return None
-        return cards[0] if cards else None
-    g = gpu_name.lower()
-    matches = [c for c in cards if c[0].lower() in g or g in c[0].lower()]
-    return matches[0] if len(matches) == 1 else None  # 同型号多卡无法按名称确定身份时不混用读数
-
-
-_process_cache = (0.0, False)
-
-
-def lhm_running(force=False):
-    """LibreHardwareMonitor 进程是否在运行 (启动中、网页服务还没起来时也算)。"""
-    global _process_cache
-    now = time.monotonic()
-    if not force and now - _process_cache[0] < 10:
-        return _process_cache[1]
-    try:
-        out = subprocess.run(["tasklist", "/fi", "imagename eq LibreHardwareMonitor.exe"],
-                             capture_output=True, text=True, timeout=3,
-                             creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0)).stdout
-        result = "LibreHardwareMonitor.exe" in out
-    except (OSError, subprocess.SubprocessError):
-        result = False
-    _process_cache = (now, result)
-    return result
+def _lhm(source):
+    """刷新传感器并解析; 不可用 (初始化中/失败) 时抛 lhm.Unavailable。"""
+    if source is None:
+        raise lhm.Unavailable("硬件传感器未启动")
+    return parse_tree(source.sample())
 
 
 def empty_reading():
     return {"cpu_temp": None, "gpu_temp": None, "cpu_fan": None, "gpu_fan": None, "cpu_load": None, "gpu_load": None,
          "gpu_fan_pct": None, "mem_load": None, "mem_used": None, "mem_total": None,
-         "gpu_mem_load": None, "gpu_mem_used": None, "gpu_mem_total": None, "net_up": None, "net_down": None, "gpus": [], "gpu_id": None, "lhm_down": False, "lhm_running": False,
+         "gpu_mem_load": None, "gpu_mem_used": None, "gpu_mem_total": None, "net_up": None, "net_down": None, "gpus": [], "gpu_id": None, "sensors_down": False,
          "case_fans": [], "pumps": [], "extra_temps": [], "nics": [], "error": None,
          "gpu_name": None, "net_selection": None,
          "sensor_ids": {"case_fans": [], "pumps": [], "extra_temps": []}}
 
 
-def read(gpu_id=None, nic_ids=None):
-    """Read normalized metrics, device identities and connection status; missing values are None."""
+def read(gpu_id=None, nic_ids=None, source=None):
+    """Read normalized metrics, device identities and sensor status from source (lhm.Sensors); missing values are None."""
     r = empty_reading()
     r["net_selection"] = None if nic_ids is None else "|".join(sorted(nic_ids))
     gpu_name = None
     try:
-        d = _lhm()
+        d = _lhm(source)
         r["cpu_temp"] = _pick_temp([(n, v) for k, n, v, _ in d["temps"] if k == "cpu"],
                                    _CPU_PREFER)
         gpu = _main_gpu(d, gpu_id)
-        uuid_card = _nvidia_for(None, gpu_id) if gpu_id and gpu_id.startswith("nvidia:") else None
+        uuid_card = nvidia.card_for(None, gpu_id) if gpu_id and gpu_id.startswith("nvidia:") else None
         if uuid_card:
             # Names are only a bridge when unique in BOTH providers. Identical cards
             # remain on the UUID provider until a hardware identity can be proven.
             matches = [h for h in _gpu_ids(d) if d["hw"][h][0].casefold() == uuid_card[0].casefold()]
-            if len(matches) == 1 and sum(c[0].casefold() == uuid_card[0].casefold() for c in _nvidia()) == 1:
+            if len(matches) == 1 and sum(c[0].casefold() == uuid_card[0].casefold() for c in nvidia.cards()) == 1:
                 gpu = matches[0]
         r["gpus"] = [(d["hw"][h][1], d["hw"][h][0]) for h in _gpu_ids(d)]  # [(HardwareId, 名称)]
         r["gpu_id"] = d["hw"][gpu][1] if gpu is not None else None
         gpu_name = d["hw"][gpu][0] if gpu is not None else None
         r["gpu_name"] = gpu_name
         if uuid_card:
-            r["gpus"] = [("nvidia:" + c[6], c[0]) for c in _nvidia()] + [
+            r["gpus"] = [("nvidia:" + c[6], c[0]) for c in nvidia.cards()] + [
                 (h, n) for h, n in r["gpus"] if not h.startswith("/gpu-nvidia")]
             r["gpu_id"], r["gpu_name"] = gpu_id, uuid_card[0]
         r["nics"] = [(hwid, name) for name, hwid in d["hw"] if any(
@@ -374,22 +311,20 @@ def read(gpu_id=None, nic_ids=None):
             elif v > 0:  # 转速为 0 视为未接风扇; 未识别硬件(独立风扇控制器等)也并入机箱风扇
                 r["case_fans"].append((name, v))
                 r["sensor_ids"]["case_fans"].append(identity)
-    except (OSError, ValueError) as e:  # URLError 是 OSError 子类; ValueError 含 JSON 解析失败
-        logging.getLogger(__name__).debug("LHM unavailable: %s", e)
-        r["lhm_down"] = True
-        r["error"] = "未连接 LibreHardwareMonitor (需开启 Remote Web Server, 端口 8085)"
-    except Exception as e:  # 代码自身的问题, 不要伪装成"未连接"
+    except lhm.Unavailable as e:
+        logging.getLogger(__name__).debug("Sensors unavailable: %s", e)
+        r["sensors_down"] = True
+        r["error"] = str(e)
+    except Exception as e:  # 代码自身的问题, 不要伪装成"不可用"
         logging.getLogger(__name__).exception("Sensor parsing failed")
         r["error"] = f"读取传感器出错: {e!r}"
 
-    if r["lhm_down"]:
-        r["lhm_running"] = lhm_running()
     if None in (r["gpu_temp"], r["gpu_fan"], r["gpu_load"], r["gpu_mem_load"]):
-        nv = _nvidia_for(gpu_name, r["gpu_id"] or gpu_id)
+        nv = nvidia.card_for(gpu_name, r["gpu_id"] or gpu_id)
         if nv:
             if r["gpu_id"] is None:
                 r["gpu_id"], r["gpu_name"] = "nvidia:" + nv[6], nv[0]
-                r["gpus"] = [("nvidia:" + c[6], c[0]) for c in _nvidia()]
+                r["gpus"] = [("nvidia:" + c[6], c[0]) for c in nvidia.cards()]
             if r["gpu_temp"] is None:
                 r["gpu_temp"] = nv[1]
             if r["gpu_load"] is None:
@@ -401,5 +336,9 @@ def read(gpu_id=None, nic_ids=None):
     return r
 
 
-if __name__ == "__main__":
-    print(json.dumps(read(), ensure_ascii=False, indent=2))
+if __name__ == "__main__":  # 调试: 需要管理员权限
+    source = lhm.Sensors()
+    try:
+        print(json.dumps(read(source=source), ensure_ascii=False, indent=2))
+    finally:
+        source.close()
