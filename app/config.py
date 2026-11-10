@@ -18,7 +18,8 @@ DEFAULT_ALERTS = {"enabled": True, "cpu_temp": 85, "gpu_temp": 85, "cooldown": 3
                   "fan_min": 300, "fan_duration": 30}
 DEFAULTS = {"close_action": "ask", "collapsed": [], "floating": {"enabled": False, "x": 40, "y": 40},
             "alerts": DEFAULT_ALERTS, "interval": 1.0, "gpu_id": None, "nic_ids": None,
-            "display": {}, "history_enabled": True}
+            "display": {}, "history_enabled": True,
+            "router": {"enabled": False, "url": "http://192.168.1.1:9100/metrics", "nic": None}}
 
 
 def migrate_legacy_data(base=None, data=None):
@@ -63,6 +64,14 @@ def validate(raw):
     for key in ("history_enabled",):
         if isinstance(raw.get(key), bool):
             out[key] = raw[key]
+    router = raw.get("router")
+    if isinstance(router, dict):
+        out["router"]["enabled"] = router.get("enabled") is True
+        url = router.get("url")
+        if isinstance(url, str) and url.strip().lower().startswith(("http://", "https://")):
+            out["router"]["url"] = url.strip()[:200]
+        nic = router.get("nic")
+        out["router"]["nic"] = nic if isinstance(nic, str) and nic else None
     f = raw.get("floating")
     if isinstance(f, dict):
         out["floating"] = {"enabled": f.get("enabled") is True,

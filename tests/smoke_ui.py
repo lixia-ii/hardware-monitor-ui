@@ -12,6 +12,7 @@ from test_core import SensorTests
 import config
 import diagnostics
 import monitor
+import openwrt
 import sensors
 from tkinter import ttk
 
@@ -126,6 +127,20 @@ with patch("collector.sensors.read", side_effect=read), patch("autostart.sync"),
             app.render(app.data)
             assert not app.case_box.master.winfo_manager(), "Empty group card stayed visible"
             app.settings["display"] = {}
+            # Router card appears only with router data and keeps working while offline.
+            router = dict(openwrt.empty_reading(), offline=False, nic="eth0", nics=["eth0"], temp=39, cpu_load=12,
+                          mem_used=4e8, mem_total=1.8e9, mem_load=22, load1=.39, up=2048, down_rate=3e6, uptime=465253)
+            app.render(dict(app.data, router=router))
+            assert app.router_box.master.winfo_manager() == "pack"
+            assert app.router_vals["uptime"].cget("text") == "5天9小时14分"
+            app.router_box.toggle()
+            assert not app.router_box.winfo_manager() and "router" in app.settings["collapsed"]
+            app.router_box.toggle()
+            assert app.router_box.winfo_manager() == "pack" and "router" not in app.settings["collapsed"]
+            app.render(dict(app.data, router=openwrt.empty_reading()))
+            assert app.router_state.cget("text") == "未连接"
+            app.render(dict(app.data, router=None))
+            assert not app.router_box.master.winfo_manager()
             app.show_floating()
             assert app.float_win.winfo_exists()
             app.hide_floating()

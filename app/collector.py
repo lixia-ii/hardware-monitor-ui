@@ -7,6 +7,7 @@ import time
 
 import config
 from history import HistoryStore, sample
+import openwrt
 import sensors
 
 log = logging.getLogger(__name__)
@@ -22,6 +23,7 @@ class Collector(threading.Thread):
         self.results = queue.Queue(maxsize=1)
         self.history_rows = queue.SimpleQueue()
         self.storage_error = None
+        self.router = openwrt.Router()
 
     def configure(self, settings):
         with self.lock:
@@ -31,6 +33,16 @@ class Collector(threading.Thread):
     def stop(self):
         self.stopping.set()
         self.wake.set()
+
+    def _read_router(self, options):
+        """路由器独立于 LHM: 离线或解析出错只影响路由器卡片, 也不参与 LHM 的退避计数。"""
+        if not options["enabled"]:
+            return None
+        try:
+            return self.router.read(options["url"], options["nic"])
+        except Exception:
+            log.exception("Router sampling failed")
+            return openwrt.empty_reading()
 
     def run(self):
         store = None
@@ -52,6 +64,7 @@ class Collector(threading.Thread):
                 try:
                     data = sensors.read(options["gpu_id"], options["nic_ids"])
                     failures = failures + 1 if data["lhm_down"] else 0
+                    data["router"] = self._read_router(options["router"])
                     data["collection_ms"] = round((time.monotonic() - started) * 1000, 1)
                     data["sample_time"] = time.time()
                     data["selection"] = (options["gpu_id"], options["nic_ids"])
@@ -77,7 +90,8 @@ class Collector(threading.Thread):
                     log.exception("Sampling failed")
                     data = sensors.empty_reading()
                     data.update(error="采集失败，请查看本地日志", sample_time=time.time(),
-                                selection=(options["gpu_id"], options["nic_ids"]))
+                                selection=(options["gpu_id"], options["nic_ids"]),
+                                router=self._read_router(options["router"]))
                     try:
                         self.results.get_nowait()
                     except queue.Empty:

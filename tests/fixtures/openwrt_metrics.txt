@@ -1,0 +1,50 @@
+# TYPE node_boot_time_seconds gauge
+node_boot_time_seconds 1793760018
+# TYPE node_cpu_seconds_total counter
+node_cpu_seconds_total{cpu="cpu0",mode="user"} 5399.81
+node_cpu_seconds_total{cpu="cpu0",mode="nice"} 0
+node_cpu_seconds_total{cpu="cpu0",mode="system"} 4250.49
+node_cpu_seconds_total{cpu="cpu0",mode="idle"} 455321.58
+node_cpu_seconds_total{cpu="cpu0",mode="iowait"} 37.47
+node_cpu_seconds_total{cpu="cpu0",mode="irq"} 0
+node_cpu_seconds_total{cpu="cpu0",mode="softirq"} 243.73
+node_cpu_seconds_total{cpu="cpu0",mode="steal"} 0
+node_cpu_seconds_total{cpu="cpu0",mode="guest"} 0
+node_cpu_seconds_total{cpu="cpu0",mode="guest_nice"} 0
+node_cpu_seconds_total{cpu="cpu1",mode="user"} 3924.19
+node_cpu_seconds_total{cpu="cpu1",mode="system"} 2723.12
+node_cpu_seconds_total{cpu="cpu1",mode="idle"} 458193.41
+# TYPE node_entropy_available_bits gauge
+node_entropy_available_bits 256
+
+# TYPE node_load1 gauge
+node_load1 0.39
+# TYPE node_memory_MemTotal_bytes gauge
+node_memory_MemTotal_bytes 1880727552
+# TYPE node_memory_MemAvailable_bytes gauge
+node_memory_MemAvailable_bytes 1451405312
+# TYPE node_memory_VmallocTotal_bytes gauge
+node_memory_VmallocTotal_bytes 1.385352354857e+14
+# TYPE node_nat_traffic gauge
+node_nat_traffic{dest="82.40.47.63",src="192.168.0.201"} 6302839
+node_network_info{operstate="unknown",broadcast="00:00:00:00:00:00",ifalias="",address="00:00:00:00:00:00",device="lo"} 1
+# TYPE node_network_receive_bytes_total counter
+node_network_receive_bytes_total{device="wlan0"} 0
+node_network_receive_bytes_total{device="utun"} 5084338402
+node_network_receive_bytes_total{device="lo"} 151836307
+node_network_receive_bytes_total{device="wg"} 70515903
+node_network_receive_bytes_total{device="br-lan"} 32962353367
+node_network_receive_bytes_total{device="eth0"} 36865966813
+# TYPE node_network_transmit_bytes_total counter
+node_network_transmit_bytes_total{device="wlan0"} 0
+node_network_transmit_bytes_total{device="utun"} 5084338934
+node_network_transmit_bytes_total{device="lo"} 151836307
+node_network_transmit_bytes_total{device="wg"} 3180093444
+node_network_transmit_bytes_total{device="br-lan"} 4199802112
+node_network_transmit_bytes_total{device="eth0"} 4254765171
+# TYPE node_thermal_zone_temp gauge
+node_thermal_zone_temp{mode="enabled",type="cpu-thermal",policy="step_wise",zone="0"} 39
+# TYPE node_time_seconds gauge
+node_time_seconds 1794225271
+node_uname_info{version="#368 SMP PREEMPT_DYNAMIC Thu Apr 30 10:26:37 CST 2026",machine="aarch64",release="6.12.84-flippy-95+o",domainname="(none)",nodename="OpenWrt",sysname="Linux"} 1
+node_scrape_collector_success{collector="uname"} 1

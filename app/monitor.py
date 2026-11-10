@@ -237,17 +237,20 @@ class App(Dialogs):
         # 网卡实时网速 (所有物理网卡之和): 只有两个数, 直接放在标题行右侧, 整张卡片只占一行
         self.net_box = self._card(main, "网络")
         self.net_box.pack_forget()
-        self.net_vals = {}
-        head = self.net_box.head
-        for key, arrow in (("net_up", "↑"), ("net_down", "↓")):  # 从右往左排
-            # 单位小字、随量级变色, 数字粗体; 各自定宽, 位数或单位变化时不跳
-            unit = tk.Label(head, text="", bg=CARD, fg=MUTED, font=(NUM, 8, "bold"), width=4, anchor="w")
-            unit.pack(side="right", anchor="s", pady=(0, "1p"))
-            num = tk.Label(head, text="--", bg=CARD, fg=MUTED, font=(NUM, 11, "bold"), width=4, anchor="e")
-            num.pack(side="right", padx=(0, "2p"))
-            tk.Label(head, text=arrow, bg=CARD, fg=MUTED, font=(FONT, 9)).pack(
-                side="right", padx=("10p" if key == "net_down" else "6p", 0))
-            self.net_vals[key] = (num, unit)
+        self.net_vals = self._rate_labels(self.net_box.head, "net_up", "net_down")
+
+        # OpenWrt 路由器 (prometheus-node-exporter-lua): 设置里启用后才显示, 标题行右侧是 WAN 网速
+        self.router_box = self._card(main, "路由器", collapse_key="router")
+        self.router_state = tk.Label(self.router_box.head, text="", bg=CARD, fg=MUTED, font=(FONT, 8))
+        self.router_state.pack(side="left", padx=("6p", 0))
+        self.router_rates = self._rate_labels(self.router_box.head, "up", "down_rate")
+        self._bind_toggle(self.router_box)  # 标题行后加的标签也要能点击收起
+        self.router_vals = {}
+        for key, title in (("temp", "温度"), ("cpu_load", "CPU"), ("mem_load", "内存"), ("load1", "负载"), ("uptime", "运行时间")):
+            f = tk.Frame(self.router_box, bg=CARD)
+            f.pack(fill="x", pady="1p")
+            tk.Label(f, text=title, bg=CARD, fg=SUB, font=(FONT, 9)).pack(side="left")
+            self.router_vals[key] = self._value(f)
 
         self.case_box = self._card(main, "机箱风扇")
 
@@ -285,7 +288,7 @@ class App(Dialogs):
         self.pin_btn.pack(side="right", padx=(0, "6p"))
         ttk.Button(self.btn_bar, text="设置", command=self.show_settings, cursor="hand2").pack(side="left")
         # 可选分组: 没有数据就不显示。按此顺序排在底栏之前
-        self.optional = [b.master for b in (self.net_box, self.case_box, self.pump_box, *self.extra_boxes.values())]
+        self.optional = [b.master for b in self._group_boxes()]
         self.shown = ()
 
         # 仅当 LibreHardwareMonitor 由 start.bat 拉起时, 关闭本窗口才一并关闭它
@@ -894,10 +897,34 @@ class App(Dialogs):
                     keys.discard(collapse_key)
                 self.settings["collapsed"] = sorted(keys)
                 self._save_settings()
-            for w in (head, *head.winfo_children()):
-                w.config(cursor="hand2")
-                w.bind("<Button-1>", toggle)
+            body.toggle = toggle
+            self._bind_toggle(body)
         return body
+
+    @staticmethod
+    def _bind_toggle(body):
+        for w in (body.head, *body.head.winfo_children()):
+            w.config(cursor="hand2")
+            w.bind("<Button-1>", body.toggle)
+
+    def _group_boxes(self):
+        """可选分组卡片, 顺序与 dialogs.GROUP_NAMES 一致。"""
+        return (self.net_box, self.router_box, self.case_box, self.pump_box, *self.extra_boxes.values())
+
+    @staticmethod
+    def _rate_labels(head, up, down):
+        """标题行右侧的 ↑ / ↓ 速率, 返回 {键: (数字标签, 单位标签)}。"""
+        labels = {}
+        for key, arrow in ((up, "↑"), (down, "↓")):  # 从右往左排
+            # 单位小字、随量级变色, 数字粗体; 各自定宽, 位数或单位变化时不跳
+            unit = tk.Label(head, text="", bg=CARD, fg=MUTED, font=(NUM, 8, "bold"), width=4, anchor="w")
+            unit.pack(side="right", anchor="s", pady=(0, "1p"))
+            num = tk.Label(head, text="--", bg=CARD, fg=MUTED, font=(NUM, 11, "bold"), width=4, anchor="e")
+            num.pack(side="right", padx=(0, "2p"))
+            tk.Label(head, text=arrow, bg=CARD, fg=MUTED, font=(FONT, 9)).pack(
+                side="right", padx=("10p" if key == down else "6p", 0))
+            labels[key] = (num, unit)
+        return labels
 
     @staticmethod
     def _value(parent):
@@ -1013,10 +1040,10 @@ class App(Dialogs):
             self._bar(k, u)
         for k, used, total in (("mem_load", "mem_used", "mem_total"), ("gpu_mem_load", "gpu_mem_used", "gpu_mem_total")):
             self._set(self.values[k + "_gb"], fmt_gb(d[used], d[total]))
-        for k, (num, unit) in self.net_vals.items():
-            n, u, color = fmt_rate(d[k])
-            self._set(num, n, MUTED if d[k] is None else FG)  # 数字固定白色, 只有单位随量级变色
-            self._set(unit, u, color)
+        self._render_rates(self.net_vals, d)
+        router = d.get("router")
+        if router:
+            self._render_router(router)
         cpu_fan = d["cpu_fan"]
         self._set(self.values["cpu_fan"], "--" if cpu_fan is None else f"{cpu_fan:.0f} RPM", MUTED if cpu_fan is None else FG)
         if d["gpu_fan"] is not None:
@@ -1044,13 +1071,36 @@ class App(Dialogs):
                    [(sensor_id("pumps", i, n), n, f"{rpm:.0f} RPM", None) for i, (n, rpm) in enumerate(pumps)],
                    "", self._value)
         # 卡片是否显示按"过滤后还有没有可见行"判断: 全部隐藏时不该再提示"未检测到"。
-        has = [d["net_up"] is not None or d["net_down"] is not None,
+        has = [d["net_up"] is not None or d["net_down"] is not None, bool(router),
                bool(self.case_box._keys), bool(self.pump_box._keys)] + [
             bool(box._keys) for box in self.extra_boxes.values()]
         self._layout(has)
         self._notice(d["error"], d["lhm_down"], d["lhm_running"])
         temps = [f"{name} {d[k]:.0f}°C" for k, name in (("cpu_temp", "CPU"), ("gpu_temp", "显卡")) if d[k] is not None]
         self.tray.set_tip("\n".join(["硬件监控", *temps]))  # 托盘悬停即可看温度, 不用打开窗口
+
+    def _render_rates(self, labels, d):
+        for k, (num, unit) in labels.items():
+            n, u, color = fmt_rate(d[k])
+            self._set(num, n, MUTED if d[k] is None else FG)  # 数字固定白色, 只有单位随量级变色
+            self._set(unit, u, color)
+
+    def _render_router(self, r):
+        self._set(self.router_state, "未连接" if r["offline"] else r["nic"] or "", RED if r["offline"] else MUTED)
+        self._render_rates(self.router_rates, r)
+        vals = self.router_vals
+        self._set(vals["temp"], "--" if r["temp"] is None else f"{r['temp']:.0f} °C", temp_color(r["temp"]))
+        cpu = r["cpu_load"]
+        self._set(vals["cpu_load"], "--" if cpu is None else f"{cpu:.0f} %", MUTED if cpu is None else FG)
+        mem = r["mem_load"]
+        gb = fmt_gb(r["mem_used"], r["mem_total"])
+        self._set(vals["mem_load"], "--" if mem is None else (gb + "  " if gb else "") + f"{mem:.0f} %",
+                  MUTED if mem is None else FG)
+        load = r["load1"]
+        self._set(vals["load1"], "--" if load is None else f"{load:.2f}", MUTED if load is None else FG)
+        up = r["uptime"]
+        text = "--" if up is None else f"{int(up // 86400)}天{int(up % 86400 // 3600)}小时{int(up % 3600 // 60)}分"
+        self._set(vals["uptime"], text, MUTED if up is None else FG)
 
     def _apply_display(self):
         from dialogs import METRIC_NAMES, GROUP_NAMES
@@ -1073,7 +1123,7 @@ class App(Dialogs):
                 else:
                     title = p.get("name") or METRIC_NAMES[key]
                 self.metric_titles[key].config(text=title)
-        self.groups = dict(zip(GROUP_NAMES, (self.net_box, self.case_box, self.pump_box, *self.extra_boxes.values())))
+        self.groups = dict(zip(GROUP_NAMES, self._group_boxes()))
         for key, box in self.groups.items():
             box.pref_group = key
             box.title_label.config(text=prefs.get(key, {}).get("name") or GROUP_NAMES[key])

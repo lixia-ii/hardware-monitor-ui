@@ -28,6 +28,36 @@
 - **重启恢复**：默认将历史写入`data/history.sqlite3`，启动时自动恢复。可在 **设置 → 常规** 关闭持久化；关闭后仍保留本次运行的内存历史，已有本地数据保留并在超过 24 小时后淘汰。
 - **悬浮窗**:点击底栏 **悬浮窗** 或在 **设置** 中开启。它会置顶显示 CPU/显卡温度与利用率;拖动标题栏可调整位置,右上角 × 关闭。位置和开关状态会在下次启动时恢复。
 
+## OpenWrt 路由器
+
+可选显示 OpenWrt 路由器的温度、CPU 利用率、内存、负载、运行时间和 WAN 上下行速度。数据来自路由器上的 [`prometheus-node-exporter-lua`](https://github.com/openwrt/packages/tree/master/utils/prometheus-node-exporter-lua)：它是 Prometheus node exporter 的 Lua 精简版，在 9100 端口以纯文本（每行"指标名 + 数值"）提供系统状态，只提供数据，不画图、不存历史。
+
+**1. 在路由器上安装并启动**（温度需要 `-thermal` 附加包）：
+
+```sh
+opkg update
+opkg install prometheus-node-exporter-lua prometheus-node-exporter-lua-thermal
+/etc/init.d/prometheus-node-exporter-lua enable
+/etc/init.d/prometheus-node-exporter-lua start
+```
+
+**2. 允许局域网访问。** 该服务默认可能只监听本机，Windows 访问不到。在路由器上检查：
+
+```sh
+netstat -lnt | grep 9100
+```
+
+- 显示 `0.0.0.0:9100` 或 `:::9100`：已可从局域网访问；仍打不开时检查防火墙。
+- 显示 `127.0.0.1:9100`：只监听本机，改为监听 lan（想监听所有接口，把 `lan` 换成 `*`）：
+
+```sh
+uci set prometheus-node-exporter-lua.main.listen_interface='lan'
+uci commit prometheus-node-exporter-lua
+/etc/init.d/prometheus-node-exporter-lua restart
+```
+
+**3. 验证并启用。** 在 Windows 浏览器打开 `http://<路由器 IP>:9100/metrics`，能看到 `node_load1 0.15` 这类文本即可。然后在 **设置 → 采集与显示 → OpenWrt 路由器** 中勾选显示，并填写该地址（默认 `http://192.168.1.1:9100/metrics`）。WAN 网卡默认自动选择（优先 `pppoe-wan`/`wan`，否则取流量最大的物理网卡），也可以手动指定。路由器离线只影响路由器卡片，重试间隔逐步延长至 30 秒。
+
 ## 自定义、诊断与常驻开销
 
 - **设置 → 采集与显示**：调整刷新间隔（0.5–30 秒）、固定默认显卡、选择参与网速统计的网卡。默认自动汇总物理网卡；手动选择时可包含 VPN/虚拟网卡，也可全部取消。显卡卡片上的切换选择也会保存。

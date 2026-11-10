@@ -18,7 +18,7 @@ BG, CARD, FG, MUTED, TRACK = "#16181d", "#20232a", "#e6e8ee", "#8a90a0", "#2f333
 FONT, NUM = "Microsoft YaHei UI", "Segoe UI"
 METRIC_NAMES = {"cpu_temp": "CPU 温度", "cpu_load": "CPU 利用率", "mem_load": "内存占用", "cpu_fan": "CPU 风扇",
                 "gpu_temp": "显卡温度", "gpu_load": "显卡利用率", "gpu_mem_load": "显存占用", "gpu_fan": "显卡风扇"}
-GROUP_NAMES = {"network": "网络", "case": "机箱风扇", "pump": "水冷泵", "storage": "硬盘温度", "memory": "内存温度", "network_temp": "网卡温度"}
+GROUP_NAMES = {"network": "网络", "router": "路由器", "case": "机箱风扇", "pump": "水冷泵", "storage": "硬盘温度", "memory": "内存温度", "network_temp": "网卡温度"}
 
 
 class Dialogs:
@@ -211,12 +211,46 @@ class Dialogs:
                             command=lambda: (auto_nic.set(False), save_nics())).pack(anchor="w")
         if not nics:
             ttk.Label(nic_box, text="连接 LibreHardwareMonitor 后可选择网卡。", style="Hint.TLabel").pack(anchor="w")
+        self._router_section(devices)
         ttk.Button(devices, text="自定义显示、名称和顺序…", command=self.show_customization).pack(anchor="w", pady=12)
         footer = ttk.Frame(body, padding=(0, "10p", 0, 0))
         footer.pack(fill="x")
         ttk.Label(footer, text="设置修改后自动保存", style="Hint.TLabel").pack(side="left")
         ttk.Button(footer, text="完成", style="Accent.TButton", command=w.destroy).pack(side="right")
         self._show_dialog(w)
+
+    def _router_section(self, parent):
+        section = self._section(parent, "OpenWrt 路由器")
+        cfg = self.settings["router"]
+        enabled = tk.BooleanVar(value=cfg["enabled"])
+        def save(**changes):
+            self._save_option("router", {**self.settings["router"], **changes})
+        ttk.Checkbutton(section, text="显示路由器状态", variable=enabled,
+                        command=lambda: save(enabled=enabled.get())).pack(anchor="w")
+        ttk.Label(section, text="指标地址", padding=(0, "6p", 0, 0)).pack(anchor="w")
+        url = tk.StringVar(value=cfg["url"])
+        entry = ttk.Entry(section, textvariable=url)
+        entry.pack(fill="x", pady=4)
+        def save_url(_=None):
+            value = url.get().strip()
+            if value.lower().startswith(("http://", "https://")):
+                save(url=value[:200])
+            else:
+                url.set(self.settings["router"]["url"])
+        entry.bind("<FocusOut>", save_url)
+        entry.bind("<Return>", save_url)
+        ttk.Label(section, text="WAN 网卡（用于统计网速）", padding=(0, "6p", 0, 0)).pack(anchor="w")
+        router = (self.data or {}).get("router") or {}
+        nics = [None] + router.get("nics", [])
+        if cfg["nic"] and cfg["nic"] not in nics:
+            nics.append(cfg["nic"])
+        names = ["自动选择"] + [n if n in router.get("nics", []) else f"{n}（暂未连接）" for n in nics[1:]]
+        nic = ttk.Combobox(section, values=names, state="readonly", width=24)
+        nic.current(nics.index(cfg["nic"]))
+        nic.pack(fill="x", pady=4)
+        nic.bind("<<ComboboxSelected>>", lambda _: save(nic=nics[nic.current()]))
+        self._hint(section, "需在路由器上安装 prometheus-node-exporter-lua（含 thermal），并把监听接口设为 lan；"
+                            "启用并连接后可选择网卡。")
 
     def _save_option(self, key, value):
         self.settings[key] = value
