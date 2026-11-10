@@ -12,6 +12,8 @@ from hwmonitor.system import autostart
 from hwmonitor.system.webserver import lan_addresses
 from hwmonitor.ui.theme import ACCENT, BG, BORDER, CARD, FG, FONT, MUTED, NAV_HOVER, RED, SUB
 
+INPUTS = ("TEntry", "TSpinbox", "TCombobox", "Entry", "Spinbox", "Text")  # 点这些控件时保留焦点
+
 
 class SettingsDialogMixin:
 
@@ -51,19 +53,34 @@ class SettingsDialogMixin:
         self.settings_pages, self._settings_nav = {}, {}
         for key, title, icon in self.SETTINGS_PAGES:
             self._settings_nav[key] = self._nav_item(nav, key, title, icon if icon_font else None, icon_font)
-            page = tk.Frame(content, bg=BG)
-            tk.Label(page, text=title, bg=BG, fg=FG, font=(FONT, 15, "bold"), anchor="w").pack(
+            frame = tk.Frame(content, bg=BG)
+            tk.Label(frame, text=title, bg=BG, fg=FG, font=(FONT, 15, "bold"), anchor="w").pack(
                 fill="x", padx="20p", pady=("12p", "2p"))
-            builders[key](self._scroll_area(page))
-            self.settings_pages[key] = page
+            builders[key](self._scroll_area(frame))
+            self.settings_pages[key] = frame
         keys = [k for k, _, _ in self.SETTINGS_PAGES]
         def cycle(step):
             self.settings_select(keys[(keys.index(self._settings_page) + step) % len(keys)])
             return "break"
         for seq, step in (("<Control-Tab>", 1), ("<Control-Next>", 1), ("<Control-Shift-Tab>", -1), ("<Control-Prior>", -1)):
             w.bind(seq, lambda _, s=step: cycle(s))
-        self.settings_select(page or getattr(self, "_settings_page", "general"))
+        # 点空白处、开关、导航等非输入控件时, 让输入框失去焦点, 触发它的 <FocusOut> 保存 (Tk 点框架不会转移焦点)
+        def blur(event):
+            if isinstance(event.widget, tk.Misc) and event.widget.winfo_class() not in INPUTS:
+                w.focus_set()
+        w.bind("<Button-1>", blur, add="+")
+        self.settings_select(page or "general")
         self._show_dialog(w)
+
+    @staticmethod
+    def _finish_edit(entry, commit):
+        """回车或空格结束编辑: 保存并移走焦点 (数值和地址里都不需要空格)。"""
+        def finish(_):
+            commit()
+            entry.winfo_toplevel().focus_set()
+            return "break"
+        for seq in ("<Return>", "<KP_Enter>", "<space>"):
+            entry.bind(seq, finish)
 
     def _nav_item(self, nav, key, title, icon, icon_font):
         """导航项: 选中时卡片底色 + 左侧强调色竖条, 悬停时变亮。"""
@@ -218,7 +235,7 @@ class SettingsDialogMixin:
 
     @staticmethod
     def _number(row, value, low, high, unit, save, increment=1, cast=int):
-        """数值输入框 + 单位; 失去焦点、回车或点箭头时校验范围后保存。"""
+        """数值输入框 + 单位; 失去焦点、回车/空格或点箭头时校验范围后保存。"""
         var, current = tk.StringVar(value=str(value)), [value]
         def commit(_=None):
             number = cast(settings.number(var.get(), current[0], low, high))
@@ -230,7 +247,7 @@ class SettingsDialogMixin:
                            style="Card.TSpinbox", command=commit)
         spin.pack(side="left")
         spin.bind("<FocusOut>", commit)
-        spin.bind("<Return>", commit)
+        SettingsDialogMixin._finish_edit(spin, commit)
         # 单位定宽, 各行输入框右侧对齐
         tk.Label(row.control, text=unit, bg=CARD, fg=SUB, font=(FONT, 9), width=4, anchor="w").pack(side="left", padx=("6p", 0))
         return spin
@@ -256,8 +273,10 @@ class SettingsDialogMixin:
         if not self.tray.ok:  # 托盘不可用时关闭一律退出, 别让选项点了不生效
             combo.state(["disabled"])
             self._row_message(row, "系统托盘不可用，关闭窗口时直接退出。")
-        row = self._row(group, "桌面悬浮窗", "置顶显示 CPU 与显卡的温度和利用率，拖动标题栏可移动")
+        row = self._row(group, "桌面悬浮窗", "显示 CPU、显卡、内存和网速；可拖动、贴边隐藏，右键设置置顶等选项")
         self._float_var = self._switch(row, self.float_win is not None, lambda _: self.toggle_floating())
+        row = self._row(group, "主窗口置顶", "主窗口和它打开的历史、硬件信息等窗口保持在最前；也可在托盘图标右键菜单切换")
+        self._topmost_var = self._switch(row, self.settings["topmost"], self.set_topmost)
 
         group = self._group(page, "启动")
         row = self._row(group, "开机自动启动", "登录后在托盘中自动开始监控；开启或关闭时需确认一次 UAC")
@@ -395,7 +414,7 @@ class SettingsDialogMixin:
                 url.set(self.settings["router"]["url"])
                 self._row_message(url_row, "地址需以 http:// 或 https:// 开头，已恢复为上次保存的地址。", error=True)
         entry.bind("<FocusOut>", save_url)
-        entry.bind("<Return>", save_url)
+        self._finish_edit(entry, save_url)
         nic_row = self._row(group, "WAN 网卡", "用于统计上下行网速；自动时优先 pppoe-wan / wan，否则取流量最大的网卡")
         router = (self.data or {}).get("router") or {}
         nics = [None] + router.get("nics", [])

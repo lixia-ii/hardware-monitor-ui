@@ -14,7 +14,8 @@ WM_LBUTTONUP, WM_RBUTTONUP, WM_CONTEXTMENU = 0x0202, 0x0205, 0x007B
 NIM_ADD, NIM_MODIFY, NIM_DELETE = 0, 1, 2
 NIF_MESSAGE, NIF_ICON, NIF_TIP, NIF_INFO = 0x01, 0x02, 0x04, 0x10
 NIIF_WARNING = 0x00000002
-MENU_SHOW, MENU_QUIT = 1, 2
+MENU_SHOW, MENU_QUIT, MENU_FLOATING, MENU_TOPMOST = 1, 2, 3, 4
+MF_CHECKED, MF_SEPARATOR = 0x08, 0x800
 
 u32 = ctypes.WinDLL("user32", use_last_error=True)
 k32 = ctypes.WinDLL("kernel32", use_last_error=True)
@@ -167,11 +168,14 @@ class Tray:
         ev, self.events = self.events, []
         return ev
 
-    def menu(self):
-        """弹出右键菜单, 返回选中的 "show" / "quit", 点别处返回 None。"""
+    def menu(self, floating=False, topmost=False):
+        """弹出右键菜单 (两个开关项按当前状态打勾), 返回选中的 "show" / "floating" / "topmost" / "quit", 点别处返回 None。"""
         m = u32.CreatePopupMenu()
         u32.AppendMenuW(m, 0, MENU_SHOW, "显示主窗口")
-        u32.AppendMenuW(m, 0x800, 0, None)  # MF_SEPARATOR
+        u32.AppendMenuW(m, MF_SEPARATOR, 0, None)
+        u32.AppendMenuW(m, MF_CHECKED if floating else 0, MENU_FLOATING, "桌面悬浮窗")
+        u32.AppendMenuW(m, MF_CHECKED if topmost else 0, MENU_TOPMOST, "主窗口置顶")
+        u32.AppendMenuW(m, MF_SEPARATOR, 0, None)
         u32.AppendMenuW(m, 0, MENU_QUIT, "退出")
         pt = wt.POINT()
         u32.GetCursorPos(ctypes.byref(pt))
@@ -179,7 +183,7 @@ class Tray:
         cmd = u32.TrackPopupMenu(m, 0x0100 | 0x0002, pt.x, pt.y, 0, self.hwnd, None)  # TPM_RETURNCMD | TPM_RIGHTBUTTON
         u32.PostMessageW(self.hwnd, 0, 0, 0)  # WM_NULL
         u32.DestroyMenu(m)
-        return {MENU_SHOW: "show", MENU_QUIT: "quit"}.get(cmd)
+        return {MENU_SHOW: "show", MENU_FLOATING: "floating", MENU_TOPMOST: "topmost", MENU_QUIT: "quit"}.get(cmd)
 
     def destroy(self):
         if self._added:

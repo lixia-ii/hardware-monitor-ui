@@ -1,9 +1,12 @@
 """Isolated GUI integration check. --preview keeps the fixture UI open for visual QA."""
 import os
+import queue
 from pathlib import Path
 import socket
 import sys
+import threading
 import time
+import traceback
 from unittest.mock import patch
 
 ROOT = Path(__file__).resolve().parents[2]
@@ -13,7 +16,7 @@ from tests.support import sample_tree
 from hwmonitor import paths, settings
 from hwmonitor.core import diagnostics
 from hwmonitor.sensors import openwrt, reading
-from hwmonitor.ui import main_window
+from hwmonitor.ui import floating as floating_mod, main_window
 from tkinter import ttk
 
 diagnostics.setup_logging()
@@ -53,6 +56,15 @@ with patch("hwmonitor.core.collector.reading.read", side_effect=read), patch("hw
                         "net_selection": None}) for i in range(17280))
 
     def check_main():
+        # 采集线程在后台照常出数, 下面每次 root.update() 都可能让 tick 渲染一份真实读数 (没有路由器、没有错误),
+        # 盖掉刚 render 的测试数据; 检查期间界面不收新结果 (采集线程换掉旧结果时也调 get_nowait, 照常放行)
+        take = app.collector.results.get_nowait
+        def ui_frozen():
+            if threading.current_thread() is threading.main_thread():
+                raise queue.Empty
+            return take()
+        frozen = patch.object(app.collector.results, "get_nowait", side_effect=ui_frozen)
+        frozen.start()
         try:
             app.root.update_idletasks()
             assert app.data and app.data["cpu_temp"] == 70
@@ -100,6 +112,24 @@ with patch("hwmonitor.core.collector.reading.read", side_effect=read), patch("hw
             cooldown.insert(0, "99999")
             cooldown.event_generate("<FocusOut>")
             assert app.settings["alerts"]["cooldown"] == 7200 and cooldown.get() == "7200", "Out-of-range value not clamped"
+            settings_window.focus_force()
+            cooldown.focus_force()  # 按键事件发往焦点控件
+            app.root.update()
+            cooldown.delete(0, "end")
+            cooldown.insert(0, "600")
+            cooldown.event_generate("<space>")
+            assert app.settings["alerts"]["cooldown"] == 600 and cooldown.get() == "600", "Space did not commit"
+            # Clicking blank space moves focus off the input, so its <FocusOut> saves the value.
+            cooldown.focus_force()
+            app.root.update()
+            cooldown.delete(0, "end")
+            cooldown.insert(0, "900")
+            blank = row_titled("alerts", "提醒间隔")
+            blank.event_generate("<Button-1>", x=2, y=2)
+            app.root.update()
+            assert settings_window.focus_get() is not cooldown, "Click on blank space kept input focus"
+            cooldown.event_generate("<FocusOut>")  # focus events need a foreground window; deliver it explicitly
+            assert app.settings["alerts"]["cooldown"] == 900
             app.settings_select("router")
             app.root.update()
             url_row = row_titled("router", "指标地址")
@@ -122,6 +152,19 @@ with patch("hwmonitor.core.collector.reading.read", side_effect=read), patch("hw
             assert f"127.0.0.1:{WEB_PORT}/data.json" in row_titled("general", "访问地址").desc.cget("text")
             row_titled("general", "启用网页服务").switch.invoke()
             assert not app.settings["web"]["enabled"] and app.web.server is None
+            topmost_switch = row_titled("general", "主窗口置顶").switch
+            topmost_switch.invoke()
+            assert app.settings["topmost"] and app.root.attributes("-topmost"), "Topmost switch not applied"
+            assert settings_window.attributes("-topmost"), "Settings window fell behind the topmost main window"
+            with patch.object(app.tray, "menu", return_value="topmost") as tray_menu:
+                app.tray.events.append("menu")
+                assert app._tray_events()
+            assert tray_menu.call_args.kwargs == {"floating": False, "topmost": True}
+            assert not app.settings["topmost"] and not app.root.attributes("-topmost")
+            assert not app._topmost_var.get(), "Settings switch did not follow the tray menu"
+            assert not settings_window.attributes("-topmost")
+            assert not any(b.cget("text") in ("置顶", "悬浮窗") for b in app.btn_bar.winfo_children()
+                           if isinstance(b, ttk.Button)), "Toolbar still has topmost/floating buttons"
             app.settings_select("general")
             app.show_customization()
             app.root.update_idletasks()
@@ -209,10 +252,11 @@ with patch("hwmonitor.core.collector.reading.read", side_effect=read), patch("hw
             device_height = device_row.winfo_height()
             assert minimum == app.root.winfo_pixels("200p")
             tall = app.root.winfo_pixels("900p")
-            app.root.geometry(f"{width}x{tall}")
-            app.root.update()
-            assert app.root.winfo_height() == tall, "Window height is capped"
-            assert not app.main_scrollbar.winfo_ismapped(), "Scrollbar shown although content fits"
+            if tall <= app.root.winfo_screenheight() - 100:  # CI 运行器屏幕很小, 窗口会被系统限高, 这一段只在屏幕够高时检查
+                app.root.geometry(f"{width}x{tall}")
+                app.root.update()
+                assert app.root.winfo_height() == tall, "Window height is capped"
+                assert not app.main_scrollbar.winfo_ismapped(), "Scrollbar shown although content fits"
             card_width = app.router_box.master.winfo_width()
             for height in (minimum, minimum + app.root.winfo_pixels("80p")):
                 app.root.geometry(f"{width}x{height}")
@@ -262,10 +306,38 @@ with patch("hwmonitor.core.collector.reading.read", side_effect=read), patch("hw
             app.settings["display"] = {}
             app._apply_display()
             app.render(app.data)
-            app.show_floating()
-            assert app.float_win.winfo_exists()
-            app.hide_floating()
-            assert app.float_win is None
+            app.render(dict(app.data, error=main_window.lhm.NO_PYTHONNET))
+            app.root.update()
+            assert app.action_btn.winfo_manager() and app._action == app.install_deps
+            app.render(app.data)
+            app.root.update()
+            assert bool(app.action_btn.winfo_manager()) == app.pawnio_missing
+            with patch.object(app.tray, "menu", return_value="floating"):
+                app.tray.events.append("menu")
+                app._tray_events()
+            fw = app.float_win
+            assert fw is not None, "Tray menu did not open the floating window"
+            assert fw.winfo_exists()
+            app.root.update()
+            assert fw.rows["cpu"].value.unit_label.cget("text") == "°C"
+            fw._vars = {"show_net": main_window.tk.BooleanVar(value=False)}
+            fw._toggle("show_net")
+            assert not fw.rows["net"].frame.winfo_manager()
+            fw._settle(fw.work[0] + 3, fw.work[1] + 100, save=False)
+            assert fw.pos[0] == fw.work[0] and fw.edge in ("left", None)
+            if fw.edge:
+                fw.conceal()
+                while fw.sliding:
+                    app.root.update()
+                assert fw.hidden and fw.winfo_width() == floating_mod.STRIP
+                fw.reveal()
+                while fw.sliding:
+                    app.root.update()
+                assert not fw.hidden and fw.winfo_rootx() == fw.pos[0]
+            with patch.object(app.tray, "menu", return_value="floating") as tray_menu:
+                app.tray.events.append("menu")
+                app._tray_events()
+            assert tray_menu.call_args.kwargs["floating"] and app.float_win is None, "Tray menu did not close the floating window"
             app.settings["display"] = {}
             app._apply_display()
             app.render(app.data)
@@ -274,26 +346,28 @@ with patch("hwmonitor.core.collector.reading.read", side_effect=read), patch("hw
                     if isinstance(window, main_window.tk.Toplevel):
                         window.destroy()
                 from tkinter import filedialog
-                from unittest.mock import patch
                 payload = {"error": None, "model": "Fixture PC", "os": "Windows", "details": []}
                 with patch.object(filedialog, "asksaveasfilename", return_value=str(paths.DATA / "report.json")), patch("hwmonitor.ui.settings_dialog.hwinfo.load", return_value=payload):
                     app.export_diagnostics()
                 app.root.after(1200, finish)
         except Exception as e:
-            failures.append(repr(e))
+            failures.append(traceback.format_exc())
             app.quit()
+        finally:
+            frozen.stop()
 
     def finish():
         try:
             assert (paths.DATA / "report.json").exists()
             assert app.collector.is_alive()
         except Exception as e:
-            failures.append(repr(e))
+            failures.append(traceback.format_exc())
         app.quit()
 
     app.root.after(1200, check_main)
     app.root.mainloop()
 
 if failures:
+    print("\n".join(failures), file=sys.stderr)  # setup_logging 把 excepthook 改成写日志文件, CI 里看不到回溯, 这里直接打到控制台
     raise AssertionError("\n".join(failures))
 print("GUI integration passed: main, charts (17,280 points), settings, customisation, floating window, export and clean exit")

@@ -1,6 +1,7 @@
 """主窗口: 实时显示 CPU/显卡温度、利用率、内存/显存占用、风扇转速与网速, 以及可选分组卡片和提示条。"""
 import ctypes
 import logging
+import math
 import queue
 import re
 import sys
@@ -15,7 +16,7 @@ from hwmonitor.core import history
 from hwmonitor.core.alerts import AlertEngine
 from hwmonitor.core.collector import Collector
 from hwmonitor.sensors import lhm, reading
-from hwmonitor.system import autostart, pawnio, tray, webserver
+from hwmonitor.system import autostart, deps, pawnio, tray, webserver
 from hwmonitor.ui import theme
 from hwmonitor.ui.customize_dialog import CustomizeDialogMixin
 from hwmonitor.ui.dialogs import DialogMixin
@@ -116,7 +117,7 @@ class MainWindow(SettingsDialogMixin, CustomizeDialogMixin, HistoryDialogMixin, 
         self.content_end = tk.Frame(main, bg=BG, height=0)
         self.content_end.pack(fill="x")
 
-        # 错误提示条: 有消息才显示, 在按钮上方; 缺少 PawnIO 驱动时右侧带"安装"按钮
+        # 错误提示条: 有消息才显示, 在按钮上方; 缺少 PawnIO 驱动或 pythonnet 时右侧带"安装"按钮
         self.notice = tk.Frame(self.footer, bg=ERR_BG, padx="8p", pady="5p",
                                highlightthickness=1, highlightbackground=ERR_BORDER)
         self.notice.columnconfigure(0, weight=1)
@@ -124,9 +125,10 @@ class MainWindow(SettingsDialogMixin, CustomizeDialogMixin, HistoryDialogMixin, 
                                wraplength="120p", justify="left", anchor="w")
         self.status.grid(row=0, column=0, sticky="ew")
         self.action_btn = ttk.Button(self.notice, text="安装", style="Accent.TButton", width=7,  # 定宽, 切换文字时不跳
-                                     command=self.install_pawnio, cursor="hand2")
+                                     command=lambda: self._action(), cursor="hand2")
         self.notice.bind("<Configure>", self._wrap_status)
         self.status_msg = ("", 0.0)  # 启动失败等临时消息, 在到期前盖过读取到的错误
+        self._action = self.install_pawnio  # 提示条"安装"按钮当前要装的东西
 
         self.btn_bar = tk.Frame(self.footer, bg=BG)
         self.btn_bar.pack(fill="x")
@@ -134,17 +136,15 @@ class MainWindow(SettingsDialogMixin, CustomizeDialogMixin, HistoryDialogMixin, 
         self.info_btn.pack(side="right")
         self.history_btn = ttk.Button(self.btn_bar, text="历史", command=self.show_history, cursor="hand2")
         self.history_btn.pack(side="right", padx=(0, "6p"))
-        self.float_btn = ttk.Button(self.btn_bar, text="悬浮窗", command=self.toggle_floating, cursor="hand2")
-        self.float_btn.pack(side="right", padx=(0, "6p"))
-        # 窗口置顶开关 (原生标题栏放不了按钮, 放在底栏), 开启时高亮
-        self.pin_btn = ttk.Button(self.btn_bar, text="置顶", command=self.toggle_topmost, cursor="hand2")
-        self.pin_btn.pack(side="right", padx=(0, "6p"))
         ttk.Button(self.btn_bar, text="设置", command=self.show_settings, cursor="hand2").pack(side="left")
         # 可选分组: 没有数据就不显示。按此顺序排在底栏之前
         self.optional = [b.master for b in self._group_boxes()]
         self.shown = ()
 
         r.protocol("WM_DELETE_WINDOW", self.close)
+        self.splash = None
+        if "--self-test" not in sys.argv:
+            self._show_splash()
 
         # 托盘图标常驻; 点最小化时隐藏到托盘。托盘不可用 (极少见) 时保持普通的最小化和关闭即退出
         self.tray = tray.Tray(theme.ICON, "硬件监控")
@@ -171,7 +171,8 @@ class MainWindow(SettingsDialogMixin, CustomizeDialogMixin, HistoryDialogMixin, 
         if "--self-test" not in sys.argv:
             r.after(300, self.check_pawnio)
         self.float_win = None
-        self._set_float_button()
+        if self.settings["topmost"]:
+            r.attributes("-topmost", True)
         if self.settings.get("floating", {}).get("enabled"):
             self.show_floating()
         self._restore_geometry()
@@ -179,12 +180,52 @@ class MainWindow(SettingsDialogMixin, CustomizeDialogMixin, HistoryDialogMixin, 
         self.tick()
 
 
+    def _show_splash(self):
+        """启动时整个窗口先盖一层纯色, 中间走进度条, 硬件传感器打开 (首份数据到达) 后再露出界面。
+        打开要几秒且拿不到真实进度, 进度条按时间逐渐逼近 95%, 数据到了补满再撤掉。"""
+        s = self.splash = tk.Frame(self.root, bg=BG)
+        s.place(x=0, y=0, relwidth=1, relheight=1)
+        s.lift()
+        box = tk.Frame(s, bg=BG)
+        box.place(relx=0.5, rely=0.45, anchor="center")
+        track = tk.Frame(box, bg=TRACK, width=box.winfo_pixels("160p"), height=box.winfo_pixels("3p"))
+        track.pack()
+        tk.Label(box, text="加载中…", bg=BG, fg=SUB, font=(FONT, 9)).pack(pady=("10p", 0))
+        self._splash_fill = tk.Frame(track, bg="#60a5fa")
+        self._splash_start = time.monotonic()
+        self._splash_step()
+
+    def _splash_step(self):
+        if not self.splash:
+            return
+        rel = 0.95 * (1 - math.exp(-(time.monotonic() - self._splash_start) / 2.5))
+        self._splash_fill.place(x=0, y=0, relheight=1, relwidth=max(rel, 0.02))
+        self._splash_job = self.root.after(30, self._splash_step)
+
+    def _hide_splash(self):
+        splash, self.splash = self.splash, None
+        self.root.after_cancel(self._splash_job)
+        self._splash_fill.place(x=0, y=0, relheight=1, relwidth=1)
+        self.root.after(200, splash.destroy)  # 让补满的进度条停留一下
+
     def toggle_topmost(self):
-        on = not self.root.attributes("-topmost")
+        self.set_topmost(not self.settings["topmost"])
+
+    def set_topmost(self, on):
+        """主窗口置顶 (设置页开关和托盘菜单共用), 保存到设置。"""
+        self.settings["topmost"] = on
+        self._save_settings()
         self.root.attributes("-topmost", on)
-        self.pin_btn.config(style="On.TButton" if on else "TButton")
-        if getattr(self, "info_win", None) and self.info_win.winfo_exists():  # 硬件信息窗口跟随, 免得被压在下面
-            self.info_win.attributes("-topmost", on)
+        var = getattr(self, "_topmost_var", None)
+        if var is not None:  # 设置窗里的开关跟随 (如从托盘菜单切换)
+            var.set(on)
+        # 已打开的设置、历史、硬件信息等窗口跟随, 免得被置顶的主窗口压在下面; 悬浮窗有自己的置顶选项
+        def follow(widget):
+            for child in widget.winfo_children():
+                if isinstance(child, tk.Toplevel) and child is not self.float_win:
+                    child.attributes("-topmost", on)
+                    follow(child)
+        follow(self.root)
 
     def check_pawnio(self):
         """启动时检查 PawnIO 驱动 (同 LibreHardwareMonitor): 未安装或过旧时询问是否安装; 开机自启时只在提示条提醒。"""
@@ -197,13 +238,22 @@ class MainWindow(SettingsDialogMixin, CustomizeDialogMixin, HistoryDialogMixin, 
             self.install_pawnio()
 
 
-    def install_pawnio(self):
+    def _install(self, job, done):
+        """提示条"安装"按钮的公共流程: 后台执行 job, 期间按钮禁用; 结果交给 done(ok)。"""
         if getattr(self, "installing", False):
             return
         self.installing = True
         self.action_btn.state(["disabled"])
         self._set(self.action_btn, "安装中…")
 
+        def finish(ok):
+            self.installing = False
+            self.action_btn.state(["!disabled"])
+            self._set(self.action_btn, "安装")
+            done(ok)
+        self._background(self.root, job, finish)
+
+    def install_pawnio(self):
         def job():
             try:
                 return pawnio.install()
@@ -212,16 +262,23 @@ class MainWindow(SettingsDialogMixin, CustomizeDialogMixin, HistoryDialogMixin, 
                 return False
 
         def done(ok):
-            self.installing = False
-            self.action_btn.state(["!disabled"])
-            self._set(self.action_btn, "安装")
             if ok:
                 self.pawnio_missing = False
                 self.collector.reload_hardware()
                 self._flash("PawnIO 已安装，正在重新初始化硬件传感器…")
             else:
                 self._flash("PawnIO 未安装成功，可稍后点击「安装」重试。")
-        self._background(self.root, job, done)
+        self._install(job, done)
+
+    def install_deps(self):
+        """源码运行缺少 pythonnet 时: 在程序目录 pip install -e ., 装好后立即重新打开硬件。"""
+        def done(ok):
+            if ok:
+                self.collector.reload_hardware()
+                self._flash("依赖已安装，正在初始化硬件传感器…")
+            else:
+                self._flash("依赖安装失败（详见日志），也可在程序目录手动运行 pip install -e .")
+        self._install(deps.install, done)
 
     def _apply_web(self):
         """按设置启动/停止网页服务; 局域网开关或端口变化时更新防火墙规则。返回错误消息。"""
@@ -252,12 +309,18 @@ class MainWindow(SettingsDialogMixin, CustomizeDialogMixin, HistoryDialogMixin, 
         self._notice((self.data or {}).get("error"))
 
     def _notice(self, error):
-        """提示条: 有消息才显示; 缺少 PawnIO 且没有其他消息时显示提醒和安装按钮。"""
+        """提示条: 有消息才显示; 缺少 pythonnet, 或缺少 PawnIO 且没有其他消息时, 显示提醒和安装按钮。"""
         msg, until = self.status_msg
         msg = msg if time.monotonic() < until else error or ""
-        action = self.pawnio_missing and not msg
-        if action:
+        action = None
+        if msg == lhm.NO_PYTHONNET:
+            action = self.install_deps
+        elif self.pawnio_missing and not msg:
+            action = self.install_pawnio
             msg = "未安装 PawnIO 驱动，CPU 温度和主板风扇无法读取。"
+        if action:
+            self._action = action
+        action = bool(action) or getattr(self, "installing", False)  # 安装中按钮保持显示 (禁用), 不随消息切换消失
         self._set(self.status, msg)
         if bool(msg) != bool(self.notice.winfo_manager()):
             if msg:
@@ -328,6 +391,22 @@ class MainWindow(SettingsDialogMixin, CustomizeDialogMixin, HistoryDialogMixin, 
         canvas.itemconfigure(self.main_window, width=canvas.winfo_width())
         canvas.configure(scrollregion=canvas.bbox("all"))
 
+    def _reveal(self, card):
+        """展开靠下的分组后自动滚动, 让展开的内容整张露出来 (卡片比视口高时优先露出标题)。"""
+        self.root.update_idletasks()
+        self._sync_main_scroll()
+        canvas = self.main_canvas
+        total = self.main_content.winfo_height()
+        view_top, view_h = canvas.canvasy(0), canvas.winfo_height()
+        top = card.winfo_y()
+        bottom = top + card.winfo_height() + self.main_content.winfo_pixels("10p")  # 连同底部留白
+        if total <= view_h or bottom <= view_top + view_h:
+            return
+        # 视图按 yscrollincrement 对齐 (四舍五入), 向上取整到整步, 免得底部被切掉一截
+        step = canvas.winfo_pixels(canvas.cget("yscrollincrement")) or 1
+        target = min(top, -(-(bottom - view_h) // step) * step)
+        canvas.yview_moveto(target / total)
+
     def _main_mousewheel(self, event):
         # 根窗口的绑定只接收主界面控件的事件，不干扰设置和历史窗口。
         if event.widget.winfo_toplevel() is self.root and self.main_scrollbar.winfo_manager() and event.delta:
@@ -370,7 +449,6 @@ class MainWindow(SettingsDialogMixin, CustomizeDialogMixin, HistoryDialogMixin, 
             return
         self.closing = True
         self._save_geometry()
-        self._save_floating_geometry()
         self.tray.destroy()
         self.root.withdraw()
         self.collector.stop()
@@ -521,6 +599,8 @@ class MainWindow(SettingsDialogMixin, CustomizeDialogMixin, HistoryDialogMixin, 
                 set_summary(body.summary.cget("text"), None)
                 self.settings["collapsed"] = sorted(keys)
                 self._sync_main_scroll()
+                if body.winfo_manager():
+                    self._reveal(card)
                 self._save_settings()
 
             def hover(on):
@@ -589,9 +669,13 @@ class MainWindow(SettingsDialogMixin, CustomizeDialogMixin, HistoryDialogMixin, 
         """处理托盘点击。选了退出返回 False。"""
         for ev in self.tray.poll():
             if ev == "menu":
-                ev = self.tray.menu()
+                ev = self.tray.menu(floating=self.float_win is not None, topmost=self.settings["topmost"])
             if ev == "show":
                 self.show_window()
+            elif ev == "floating":
+                self.toggle_floating()
+            elif ev == "topmost":
+                self.toggle_topmost()
             elif ev == "quit":
                 self.quit()
                 return False
@@ -620,6 +704,8 @@ class MainWindow(SettingsDialogMixin, CustomizeDialogMixin, HistoryDialogMixin, 
             self.tray.set_tip("\n".join(["硬件监控", *temps]))
             if self.root.state() == "normal" and self.root.winfo_viewable():
                 self.render(data)
+        if data and self.splash and not data.get("initializing"):
+            self._hide_splash()
         error = self.collector.storage_error
         if error and error != self._storage_notice:
             self._storage_notice = error

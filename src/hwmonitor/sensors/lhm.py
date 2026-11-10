@@ -50,6 +50,7 @@ HARDWARE_TYPES = {
 ENABLED = ("IsCpuEnabled", "IsGpuEnabled", "IsMotherboardEnabled", "IsMemoryEnabled", "IsStorageEnabled",
            "IsNetworkEnabled", "IsControllerEnabled", "IsPsuEnabled", "IsBatteryEnabled", "IsPowerMonitorEnabled")
 RETRY = 60  # 初始化失败后的重试间隔 (秒)
+NO_PYTHONNET = "缺少 pythonnet，CPU、显卡等传感器无法读取，点击「安装」自动安装依赖。"
 
 
 class Unavailable(OSError):
@@ -140,7 +141,7 @@ def _load(lib_dir):
         try:
             from pythonnet import load
         except ImportError as e:
-            raise Unavailable("缺少 pythonnet，请先在程序目录运行 pip install -e .") from e
+            raise Unavailable(NO_PYTHONNET) from e
         if not (Path(lib_dir) / "LibreHardwareMonitorLib.dll").exists():
             raise Unavailable("找不到 LibreHardwareMonitor 目录，请保留程序目录完整。")
         load("netfx")

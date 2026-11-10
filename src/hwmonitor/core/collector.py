@@ -74,7 +74,8 @@ class Collector(threading.Thread):
                 self.storage_error = "历史保存不可用，当前仅在内存中保留；请检查目录权限或数据库。"
             if self.source is not None and not self.source.ready:
                 # 首次打开硬件要几秒, 先让界面显示提示
-                self._put(dict(reading.empty_reading(), error="正在初始化硬件传感器…", sample_time=time.time(),
+                self._put(dict(reading.empty_reading(), error="正在初始化硬件传感器…", initializing=True,
+                               sample_time=time.time(),
                                selection=(self.options["gpu_id"], self.options["nic_ids"]), router=None))
             while not self.stopping.is_set():
                 self.wake.clear()

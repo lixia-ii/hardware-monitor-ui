@@ -20,6 +20,16 @@ class SettingsTests(unittest.TestCase):
         self.assertEqual(result["nic_ids"], ["nic"])
         self.assertEqual(result["interval"], .5)
 
+    def test_floating_options(self):
+        result = settings.validate({"floating": {"enabled": True, "x": 10, "opacity": 0.1, "topmost": "no", "show_net": False}})
+        self.assertEqual(result["floating"], dict(settings.DEFAULT_FLOATING, enabled=True, x=10, opacity=0.3, show_net=False))
+        self.assertEqual(settings.validate({"floating": {"x": 1}})["floating"]["opacity"], 1.0)
+
+    def test_main_window_topmost(self):
+        self.assertFalse(settings.DEFAULTS["topmost"])
+        self.assertTrue(settings.validate({"topmost": True})["topmost"])
+        self.assertFalse(settings.validate({"topmost": 1})["topmost"])
+
     def test_window_geometry(self):
         for bad in (None, [], {"width": 300}, {"width": True, "height": 400, "x": 0, "y": 0},
                     {"width": "300", "height": 400, "x": 0, "y": 0}):

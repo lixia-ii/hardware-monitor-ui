@@ -12,7 +12,9 @@ from hwmonitor import paths
 DEFAULT_ALERTS = {"enabled": True, "cpu_temp": 85, "gpu_temp": 85, "cooldown": 300,
                   "duration": 10, "hysteresis": 5, "fan_enabled": False,
                   "fan_min": 300, "fan_duration": 30}
-DEFAULTS = {"close_action": "ask", "collapsed": [], "floating": {"enabled": False, "x": 40, "y": 40},
+DEFAULT_FLOATING = {"enabled": False, "x": 40, "y": 40, "topmost": True, "autohide": True,
+                    "opacity": 1.0, "show_mem": True, "show_net": True}
+DEFAULTS = {"close_action": "ask", "topmost": False, "collapsed": [], "floating": DEFAULT_FLOATING,
             "alerts": DEFAULT_ALERTS, "interval": 1.0, "gpu_id": None, "nic_ids": None,
             "display": {}, "history_enabled": True,
             "router": {"enabled": False, "url": "http://192.168.1.1:9100/metrics", "nic": None},
@@ -41,7 +43,7 @@ def validate(raw):
     out["gpu_id"] = gpu if isinstance(gpu, str) and gpu else None
     ids = raw.get("nic_ids")
     out["nic_ids"] = [x for x in ids if isinstance(x, str)] if isinstance(ids, list) else None
-    for key in ("history_enabled",):
+    for key in ("history_enabled", "topmost"):
         if isinstance(raw.get(key), bool):
             out[key] = raw[key]
     router = raw.get("router")
@@ -60,7 +62,10 @@ def validate(raw):
     if isinstance(f, dict):
         out["floating"] = {"enabled": f.get("enabled") is True,
                            "x": int(number(f.get("x"), 40, -100000, 100000)),
-                           "y": int(number(f.get("y"), 40, -100000, 100000))}
+                           "y": int(number(f.get("y"), 40, -100000, 100000)),
+                           "opacity": round(number(f.get("opacity"), 1.0, 0.3, 1.0), 2)}
+        for key in ("topmost", "autohide", "show_mem", "show_net"):
+            out["floating"][key] = f[key] if isinstance(f.get(key), bool) else DEFAULT_FLOATING[key]
     w = raw.get("window")
     if isinstance(w, dict) and all(isinstance(w.get(k), (int, float)) and not isinstance(w.get(k), bool)
                                    for k in ("width", "height", "x", "y")):
