@@ -19,7 +19,8 @@ DEFAULT_ALERTS = {"enabled": True, "cpu_temp": 85, "gpu_temp": 85, "cooldown": 3
 DEFAULTS = {"close_action": "ask", "collapsed": [], "floating": {"enabled": False, "x": 40, "y": 40},
             "alerts": DEFAULT_ALERTS, "interval": 1.0, "gpu_id": None, "nic_ids": None,
             "display": {}, "history_enabled": True,
-            "router": {"enabled": False, "url": "http://192.168.1.1:9100/metrics", "nic": None}}
+            "router": {"enabled": False, "url": "http://192.168.1.1:9100/metrics", "nic": None},
+            "window": None}
 
 
 def migrate_legacy_data(base=None, data=None):
@@ -77,6 +78,13 @@ def validate(raw):
         out["floating"] = {"enabled": f.get("enabled") is True,
                            "x": int(number(f.get("x"), 40, -100000, 100000)),
                            "y": int(number(f.get("y"), 40, -100000, 100000))}
+    w = raw.get("window")
+    if isinstance(w, dict) and all(isinstance(w.get(k), (int, float)) and not isinstance(w.get(k), bool)
+                                   for k in ("width", "height", "x", "y")):
+        out["window"] = {"width": int(number(w["width"], 0, 100, 20000)),
+                         "height": int(number(w["height"], 0, 100, 20000)),
+                         "x": int(number(w["x"], 0, -100000, 100000)),
+                         "y": int(number(w["y"], 0, -100000, 100000))}
     alerts = raw.get("alerts")
     if isinstance(alerts, dict):
         for k, default in DEFAULT_ALERTS.items():

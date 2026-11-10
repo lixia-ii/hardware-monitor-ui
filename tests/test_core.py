@@ -32,6 +32,13 @@ class SettingsTests(unittest.TestCase):
         self.assertEqual(result["nic_ids"], ["nic"])
         self.assertEqual(result["interval"], .5)
 
+    def test_window_geometry(self):
+        for bad in (None, [], {"width": 300}, {"width": True, "height": 400, "x": 0, "y": 0},
+                    {"width": "300", "height": 400, "x": 0, "y": 0}):
+            self.assertIsNone(config.validate({"window": bad})["window"])
+        window = config.validate({"window": {"width": 10, "height": 500.7, "x": -1920, "y": 40}})["window"]
+        self.assertEqual(window, {"width": 100, "height": 500, "x": -1920, "y": 40})
+
     def test_empty_gpu_id_means_automatic(self):
         self.assertIsNone(config.validate({"gpu_id": ""})["gpu_id"])
         self.assertEqual(config.validate({"gpu_id": "/gpu-nvidia/0"})["gpu_id"], "/gpu-nvidia/0")

@@ -41,6 +41,7 @@ RED = "#f87171"
 PIN = "#1e3a5f"  # 置顶按钮开启时的底色
 CHIP_HOVER = "#3a3f4b"
 ACCENT = "#2563eb"  # 主操作按钮
+FIELD = "#1b1d23"  # 卡片里的输入框底色
 ERR_BG = "#2a1d21"  # 错误提示条
 ERR_BORDER = "#4a2a2f"
 FONT = "Microsoft YaHei UI"
@@ -117,6 +118,15 @@ def set_icon(win):
         pass
 
 
+def on_screen(x, y):
+    """屏幕坐标 (x, y) 是否落在某个显示器上 (多显示器、拔掉副屏后恢复位置时用)。"""
+    from ctypes import wintypes as wt
+    user = ctypes.windll.user32
+    user.MonitorFromPoint.argtypes = [wt.POINT, wt.DWORD]
+    user.MonitorFromPoint.restype = wt.HMONITOR
+    return bool(user.MonitorFromPoint(wt.POINT(x, y), 0))  # MONITOR_DEFAULTTONULL
+
+
 def short_gpu(name):
     """显卡名去掉厂商前缀等, 放进小标签: "NVIDIA GeForce RTX 4060" -> "RTX 4060", "Intel(R) UHD Graphics 770" -> "UHD 770"。"""
     s = re.sub(r"\((?:R|TM)\)|\b(?:NVIDIA|AMD|Intel|GeForce|Graphics)\b|\bRadeon\s+(?=RX\b)", " ", name, flags=re.I)
@@ -156,11 +166,33 @@ def _rgb(c):
     return tuple(int(c[i:i + 2], 16) for i in (1, 3, 5))
 
 
-def check_png(size, gap, fill, border, check=None):
-    """画勾选框图标, 返回 PNG 字节: 圆角方框 + 可选的对号, 右侧留 gap 像素透明间距。
-    clam 主题自带的勾选标记是 ×, 只能换成图片; 不依赖 Pillow, 4x4 超采样抗锯齿后用 zlib 手写 PNG。"""
+def render_png(width, height, sample):
+    """sample(x, y) -> RGB 或 None (透明), 4x4 超采样抗锯齿后用 zlib 手写 PNG, 返回 PNG 字节。不依赖 Pillow。"""
     import struct
     import zlib
+    n = 4
+    rows = []
+    for py in range(height):
+        row = bytearray(b"\x00")  # 每行前的过滤类型字节
+        for px in range(width):
+            acc, hit = [0, 0, 0], 0
+            for sy in range(n):
+                for sx in range(n):
+                    c = sample(px + (sx + 0.5) / n, py + (sy + 0.5) / n)
+                    if c:
+                        hit += 1
+                        acc = [a + v for a, v in zip(acc, c)]
+            row += bytes([a // hit for a in acc] + [255 * hit // (n * n)]) if hit else b"\x00\x00\x00\x00"
+        rows.append(bytes(row))
+
+    def chunk(tag, data):
+        return struct.pack(">I", len(data)) + tag + data + struct.pack(">I", zlib.crc32(tag + data))
+    return (b"\x89PNG\r\n\x1a\n" + chunk(b"IHDR", struct.pack(">IIBBBBB", width, height, 8, 6, 0, 0, 0))
+            + chunk(b"IDAT", zlib.compress(b"".join(rows))) + chunk(b"IEND", b""))
+
+
+def check_png(size, gap, fill, border, check=None):
+    """画勾选框图标: 圆角方框 + 可选的对号, 右侧留 gap 像素透明间距。clam 主题自带的勾选标记是 ×, 只能换成图片。"""
     fill, border = _rgb(fill), _rgb(border)
     check = check and _rgb(check)
     radius, bw, cw = size * 0.2, max(1.0, size / 14), size * 0.13  # 圆角半径、边框宽、对号笔画半宽
@@ -173,6 +205,8 @@ def check_png(size, gap, fill, border, check=None):
         return ((px - ax - t * dx) ** 2 + (py - ay - t * dy) ** 2) ** 0.5
 
     def sample(x, y):
+        if x >= size:
+            return None
         # 圆角矩形的有向距离: 负数在内部
         qx, qy = abs(x - size / 2) - (size / 2 - radius), abs(y - size / 2) - (size / 2 - radius)
         d = (max(qx, 0) ** 2 + max(qy, 0) ** 2) ** 0.5 + min(max(qx, qy), 0) - radius
@@ -181,26 +215,41 @@ def check_png(size, gap, fill, border, check=None):
         if check and min(seg_dist(x, y, pts[0], pts[1]), seg_dist(x, y, pts[1], pts[2])) < cw:
             return check
         return border if d > -bw else fill
+    return render_png(size + gap, size, sample)
 
-    n = 4
-    rows = []
-    for py in range(size):
-        row = bytearray(b"\x00")  # 每行前的过滤类型字节
-        for px in range(size + gap):
-            acc, hit = [0, 0, 0], 0
-            for sy in range(n):
-                for sx in range(n):
-                    c = sample(px + (sx + 0.5) / n, py + (sy + 0.5) / n) if px < size else None
-                    if c:
-                        hit += 1
-                        acc = [a + v for a, v in zip(acc, c)]
-            row += bytes([a // hit for a in acc] + [255 * hit // (n * n)]) if hit else b"\x00\x00\x00\x00"
-        rows.append(bytes(row))
 
-    def chunk(tag, data):
-        return struct.pack(">I", len(data)) + tag + data + struct.pack(">I", zlib.crc32(tag + data))
-    return (b"\x89PNG\r\n\x1a\n" + chunk(b"IHDR", struct.pack(">IIBBBBB", size + gap, size, 8, 6, 0, 0, 0))
-            + chunk(b"IDAT", zlib.compress(b"".join(rows))) + chunk(b"IEND", b""))
+def switch_png(width, height, track, border, knob, on):
+    """画开关图标 (Windows 11 样式): 胶囊形轨道 + 圆形滑块, 开启时滑块在右侧且略大。"""
+    track, border, knob = _rgb(track), _rgb(border), _rgb(knob)
+    r, bw = height / 2, max(1.0, height / 14)
+    kr = height * (0.3 if on else 0.25)
+    kx = width - r if on else r
+
+    def sample(x, y):
+        qx = max(abs(x - width / 2) - (width / 2 - r), 0)
+        d = (qx ** 2 + (y - r) ** 2) ** 0.5 - r
+        if d > 0:
+            return None
+        if (x - kx) ** 2 + (y - r) ** 2 < kr ** 2:
+            return knob
+        return border if d > -bw else track
+    return render_png(width, height, sample)
+
+
+def temp_summary(temps):
+    """收起的温度分组标题行右侧: 只显示最高温度。"""
+    if not temps:
+        return "", MUTED
+    t = max(temps)
+    return (f"最高 {t:.0f} °C" if len(temps) > 1 else f"{t:.0f} °C"), temp_color(t)
+
+
+def rpm_summary(rpms):
+    """收起的风扇/水泵分组标题行右侧: 一个显示转速, 多个显示范围。"""
+    if not rpms:
+        return "", MUTED
+    low, high = min(rpms), max(rpms)
+    return (f"{high:.0f} RPM" if round(low) == round(high) else f"{low:.0f}–{high:.0f} RPM"), FG if high else MUTED
 
 
 class App(Dialogs):
@@ -220,15 +269,30 @@ class App(Dialogs):
         self.sensor_names = {}
         r.title("硬件监控")
         r.configure(bg=BG)
-        # 尺寸用点 (p) 而非像素, 高 DPI 下按比例放大。完整界面建好后还会
-        # 按实际内容补齐最小高度，避免把窗口缩到卡片或底栏看不见。
-        r.minsize(r.winfo_pixels("300p"), r.winfo_pixels("220p"))
-        r.resizable(True, True)  # 双向可调；最小尺寸由当前可见内容保证，不能把卡片或底栏拉没
+        # 窗口尺寸只由用户决定 (并记住), 内容变化从不改变窗口大小: 卡片区滚动, 底部工具栏固定。
+        r.minsize(r.winfo_pixels("300p"), r.winfo_pixels("200p"))
+        r.resizable(True, True)
         self._style()
         set_icon(r)
 
-        main = tk.Frame(r, bg=BG, padx="10p", pady="10p")
-        main.pack(fill="both", expand=True)
+        # 底部工具栏 (提示条 + 按钮) 固定在窗口底部, 不随卡片滚动; 先 pack 才不会被卡片区挤掉
+        self.footer = tk.Frame(r, bg=BG, padx="10p", pady="8p")
+        self.footer.pack(side="bottom", fill="x")
+        tk.Frame(r, bg=BORDER, height=1).pack(side="bottom", fill="x")
+        self.viewport = tk.Frame(r, bg=BG)
+        self.viewport.pack(fill="both", expand=True)
+        self.main_canvas = tk.Canvas(self.viewport, bg=BG, highlightthickness=0,
+                                     width="300p", height="300p", yscrollincrement="20p")
+        # 细滚动条浮在右侧留白上 (类似 Windows 11), 出现/消失时卡片宽度不变, 不会左右跳动
+        self.main_scrollbar = ttk.Scrollbar(self.viewport, orient="vertical", style="Thin.Vertical.TScrollbar",
+                                            command=self.main_canvas.yview)
+        self.main_canvas.configure(yscrollcommand=self.main_scrollbar.set)
+        self.main_canvas.pack(fill="both", expand=True)
+        self.main_content = main = tk.Frame(self.main_canvas, bg=BG, padx="10p", pady="10p")
+        self.main_window = self.main_canvas.create_window(0, 0, window=main, anchor="nw")
+        self.main_canvas.bind("<Configure>", self._sync_main_scroll)
+        main.bind("<Configure>", self._sync_main_scroll)
+        r.bind("<MouseWheel>", self._main_mousewheel, add="+")
 
         self.values = {}
         self.bars = {}
@@ -252,17 +316,18 @@ class App(Dialogs):
             tk.Label(f, text=title, bg=CARD, fg=SUB, font=(FONT, 9)).pack(side="left")
             self.router_vals[key] = self._value(f)
 
-        self.case_box = self._card(main, "机箱风扇")
+        self.case_box = self._card(main, "机箱风扇", collapse_key="case")
 
         # 水冷泵: 只有检测到时才显示, 插在机箱风扇下面
-        self.pump_box = self._card(main, "水冷泵")
+        self.pump_box = self._card(main, "水冷泵", collapse_key="pump")
 
         # 硬盘 / 内存 / 网卡各一项, 可点击标题收起或展开 (记住上次的状态)
         self.extra_boxes = {k: self._card(main, f"{label}温度", collapse_key=k)
                             for k, label in sensors.EXTRA_LABELS.items()}
+        # 可选分组卡片的末尾锚点, 分组按顺序插在它前面
+        self.content_end = tk.Frame(main, bg=BG, height=0)
+        self.content_end.pack(fill="x")
 
-        self.footer = tk.Frame(main, bg=BG)
-        self.footer.pack(fill="x", pady=("8p", 0))
         # 错误提示条: 有消息才显示, 在按钮上方; 未连接 LibreHardwareMonitor 时右侧带"启动"按钮
         self.notice = tk.Frame(self.footer, bg=ERR_BG, padx="8p", pady="5p",
                                highlightthickness=1, highlightbackground=ERR_BORDER)
@@ -319,9 +384,8 @@ class App(Dialogs):
         self._set_float_button()
         if self.settings.get("floating", {}).get("enabled"):
             self.show_floating()
-        self.centered = False
-        self._update_main_minimum()
-        self.center()
+        self._restore_geometry()
+        r.bind("<Configure>", self._schedule_geometry_save, add="+")
         self.tick()
 
     def _style(self):
@@ -386,6 +450,13 @@ class App(Dialogs):
         s.configure("Vertical.TScrollbar", background=TRACK, troughcolor=BG,
                     bordercolor=BG, lightcolor=TRACK, darkcolor=TRACK, arrowcolor=SUB)
         s.map("Vertical.TScrollbar", background=[("active", BORDER), ("pressed", MUTED)])
+        # 主界面的细滚动条: 无箭头, 只有滑块, 浮在卡片右侧留白上
+        s.layout("Thin.Vertical.TScrollbar", [("Vertical.Scrollbar.trough", {"sticky": "ns", "children": [
+            ("Vertical.Scrollbar.thumb", {"expand": "1", "sticky": "nswe"})]})])
+        s.configure("Thin.Vertical.TScrollbar", background=TRACK, troughcolor=BG, bordercolor=BG,
+                    lightcolor=TRACK, darkcolor=TRACK, gripcount=0, arrowsize=self.root.winfo_pixels("5p"))
+        s.map("Thin.Vertical.TScrollbar", background=[("pressed", MUTED), ("active", "#4a505d")],
+              lightcolor=[("pressed", MUTED), ("active", "#4a505d")], darkcolor=[("pressed", MUTED), ("active", "#4a505d")])
         self.root.option_add("*TCombobox*Listbox.background", CARD)
         self.root.option_add("*TCombobox*Listbox.foreground", FG)
         self.root.option_add("*TCombobox*Listbox.selectBackground", PIN)
@@ -403,6 +474,30 @@ class App(Dialogs):
             ("Check.indicator", {"side": "left", "sticky": ""}),
             ("Checkbutton.focus", {"side": "left", "sticky": "w", "children": [
                 ("Checkbutton.label", {"sticky": "nswe"})]})]})])
+        # 设置页的开关 (Windows 11 样式), 代替勾选框表示即时生效的开/关
+        w, h = self.root.winfo_pixels("28p"), self.root.winfo_pixels("14p")
+        sw = lambda *a: tk.PhotoImage(data=switch_png(w, h, *a), format="png")
+        self._switch_imgs = (sw(FIELD, MUTED, SUB, False), sw(TRACK, SUB, FG, False),
+                             sw(ACCENT, ACCENT, "#ffffff", True), sw("#3b82f6", "#3b82f6", "#ffffff", True),
+                             sw(CARD, CHIP_HOVER, CHIP_HOVER, False), sw(TRACK, TRACK, MUTED, True))
+        off, off_hover, on, on_hover, dis_off, dis_on = self._switch_imgs
+        s.element_create("Switch.indicator", "image", off, ("disabled", "selected", dis_on), ("disabled", dis_off),
+                         ("selected", "active", on_hover), ("selected", on), ("active", off_hover))
+        s.layout("Switch.TCheckbutton", [("Checkbutton.padding", {"sticky": "nswe", "children": [
+            ("Switch.indicator", {"side": "left", "sticky": ""})]})])
+        s.configure("Switch.TCheckbutton", background=CARD, padding=0)
+        s.map("Switch.TCheckbutton", background=[("active", CARD)])
+        # 设置行 (卡片底色) 里的控件: 背景跟随卡片, 输入框比卡片暗一档
+        s.configure("Card.TCheckbutton", background=CARD, focuscolor=CARD)
+        s.map("Card.TCheckbutton", background=[("active", CARD)])
+        s.configure("Card.TButton", background=TRACK, lightcolor=TRACK, darkcolor=TRACK)
+        hover = [("disabled", CARD), ("pressed", BORDER), ("active", CHIP_HOVER)]
+        s.map("Card.TButton", background=hover, lightcolor=hover, darkcolor=hover)
+        for kind in ("TEntry", "TCombobox", "TSpinbox"):
+            s.configure("Card." + kind, fieldbackground=FIELD, lightcolor=FIELD, darkcolor=FIELD)
+            s.map("Card." + kind, fieldbackground=[("disabled", CARD), ("readonly", FIELD)],
+                  lightcolor=[("focus", ACCENT), ("disabled", CARD)], darkcolor=[("focus", ACCENT), ("disabled", CARD)],
+                  bordercolor=[("focus", ACCENT)])
         # 主操作按钮 (提示条里的"启动")
         s.configure("Accent.TButton", background=ACCENT, foreground="white", bordercolor=ACCENT,
                     lightcolor=ACCENT, darkcolor=ACCENT, focuscolor=ACCENT, anchor="center")
@@ -474,7 +569,7 @@ class App(Dialogs):
                 self.notice.pack(fill="x", pady=(0, "8p"), before=self.btn_bar)
             else:
                 self.notice.pack_forget()
-            self._update_main_minimum()
+            self._sync_main_scroll()
         if launch != bool(self.launch_btn.winfo_manager()):
             if launch:
                 self.launch_btn.grid(row=0, column=1, padx=("8p", 0))
@@ -500,21 +595,59 @@ class App(Dialogs):
         y = self.root.winfo_y() + (self.root.winfo_height() - mh) // 2
         w.geometry(f"+{max(0, min(x, w.winfo_screenwidth() - mw - 20))}+{max(0, min(y, w.winfo_screenheight() - mh - 70))}")
 
-    def center(self):
-        """窗口居中到屏幕。"""
+    def _restore_geometry(self):
+        """恢复上次的窗口大小和位置; 首次运行或原位置所在的显示器已不存在时, 用默认大小居中。"""
         r = self.root
         r.update_idletasks()
-        w, h = r.winfo_reqwidth(), r.winfo_reqheight()
-        x = (r.winfo_screenwidth() - w) // 2
-        y = (r.winfo_screenheight() - h) // 2
-        r.geometry(f"+{max(x, 0)}+{max(y, 0)}")
+        min_w, min_h = r.minsize()
+        saved = self.settings.get("window")
+        if saved and on_screen(saved["x"] + saved["width"] // 2, saved["y"] + r.winfo_pixels("10p")):
+            w, h, x, y = max(min_w, saved["width"]), max(min_h, saved["height"]), saved["x"], saved["y"]
+        else:
+            w = min_w
+            h = max(min_h, min(r.winfo_pixels("440p"), r.winfo_screenheight() - r.winfo_pixels("80p")))
+            x, y = max(0, (r.winfo_screenwidth() - w) // 2), max(0, (r.winfo_screenheight() - h) // 2)
+        r.geometry(f"{w}x{h}+{x}+{y}")
 
-    def _update_main_minimum(self):
-        """按当前可见内容更新主窗口的最小尺寸。"""
+    def _schedule_geometry_save(self, event):
+        """用户拖动或缩放窗口后稍等再保存, 拖动过程中不反复写盘。"""
+        if event.widget is not self.root:
+            return
+        if getattr(self, "_geometry_job", None):
+            self.root.after_cancel(self._geometry_job)
+        self._geometry_job = self.root.after(800, self._save_geometry)
+
+    def _save_geometry(self):
+        self._geometry_job = None
         r = self.root
-        r.update_idletasks()
-        r.minsize(max(r.winfo_pixels("300p"), r.winfo_reqwidth()),
-                  max(r.winfo_pixels("220p"), r.winfo_reqheight()))
+        if r.state() != "normal" or not r.winfo_viewable():  # 最大化、最小化、隐藏时保留原来的普通尺寸
+            return
+        m = re.fullmatch(r"(\d+)x(\d+)\+(-?\d+)\+(-?\d+)", r.geometry())
+        if not m:
+            return
+        window = dict(zip(("width", "height", "x", "y"), map(int, m.groups())))
+        if window != self.settings.get("window"):
+            self.settings["window"] = window
+            self._save_settings()
+
+    def _sync_main_scroll(self, _=None):
+        """内容保持自然高度，超出视口时才显示浮在右侧留白上的细滚动条, 卡片宽度始终不变。"""
+        canvas = self.main_canvas
+        overflow = self.main_content.winfo_reqheight() > canvas.winfo_height()
+        if overflow and not self.main_scrollbar.winfo_manager():
+            self.main_scrollbar.place(relx=1, x=-canvas.winfo_pixels("2p"), rely=0, relheight=1, anchor="ne")
+        elif not overflow and self.main_scrollbar.winfo_manager():
+            self.main_scrollbar.place_forget()
+            canvas.yview_moveto(0)
+        canvas.itemconfigure(self.main_window, width=canvas.winfo_width())
+        canvas.configure(scrollregion=canvas.bbox("all"))
+
+    def _main_mousewheel(self, event):
+        # 根窗口的绑定只接收主界面控件的事件，不干扰设置和历史窗口。
+        if event.widget.winfo_toplevel() is self.root and self.main_scrollbar.winfo_manager() and event.delta:
+            steps = max(1, abs(event.delta) // 120)
+            self.main_canvas.yview_scroll(-steps if event.delta > 0 else steps, "units")
+            return "break"
 
     def show_window(self):
         r = self.root
@@ -694,6 +827,7 @@ class App(Dialogs):
         if getattr(self, "closing", False):
             return
         self.closing = True
+        self._save_geometry()
         self._save_floating_geometry()
         self.tray.destroy()
         self.root.withdraw()
@@ -784,8 +918,8 @@ class App(Dialogs):
     def _devices(self, parent):
         """CPU / 显卡各一张卡片: 大字温度, 下面是利用率、内存/显存占用 (带进度条) 和风扇。"""
         row = tk.Frame(parent, bg=BG)
-        # 多出的纵向空间交给两张主卡片，窗口上下左右拉伸都会同步适应。
-        row.pack(fill="both", expand=True)
+        # 主卡片保持自然高度，收起分组或拉高窗口时不产生卡片内空白。
+        row.pack(fill="x")
         row.rowconfigure(0, weight=1)
         for i, (dev, name, accent) in enumerate((("cpu", "CPU", "#60a5fa"), ("gpu", "显卡", "#a78bfa"))):
             row.columnconfigure(i, weight=1, uniform="dev")
@@ -797,11 +931,11 @@ class App(Dialogs):
             title_label = tk.Label(head, text=name, bg=CARD, fg=MUTED, font=(FONT, 10, "bold"))
             title_label.pack(side="left")
             self.metric_titles[dev + "_temp"] = title_label
-            if dev == "gpu":  # 多显卡时才显示的切换标签, 在卡片右上角, 点击切到下一块
-                # 不用 Menubutton: Windows 原生下拉菜单不认配色, 在深色界面里是一块白
-                chip = self.gpu_chip = tk.Label(head, bg=TRACK, fg=FG, font=(FONT, 9), padx="5p", cursor="hand2")
-                chip.bind("<Button-1>", self._next_gpu)
-                chip.bind("<Enter>", lambda _: chip.config(bg=CHIP_HOVER))
+            if dev == "gpu":  # 显卡型号标签在卡片右上角; 多显卡时点击弹出菜单选择
+                # 不用 Menubutton: 按钮本体不认深色配色; 弹出菜单跟随 dark_menus 的系统深色主题
+                chip = self.gpu_chip = tk.Label(head, bg=TRACK, fg=FG, font=(FONT, 9), padx="5p")
+                chip.bind("<Button-1>", self._gpu_menu)
+                chip.bind("<Enter>", lambda _: len(self.gpu_list) > 1 and chip.config(bg=CHIP_HOVER))
                 chip.bind("<Leave>", lambda _: chip.config(bg=TRACK))
                 self.gpu_list = []
             temp = tk.Frame(card, bg=CARD)
@@ -832,22 +966,32 @@ class App(Dialogs):
                     bar.rel = 0
                     self.bars[key] = bar
 
-    def _next_gpu(self, _=None):
-        ids = [h for h, _ in self.gpu_list]
-        if len(ids) < 2:
+    def _gpu_menu(self, _=None):
+        """多显卡时在型号标签下方弹出菜单, 列出完整型号, 当前显卡带选中标记。"""
+        if len(self.gpu_list) < 2:
             return
-        cur = self.gpu_sel if self.gpu_sel in ids else self.gpu_cur
-        self.gpu_sel = ids[(ids.index(cur) + 1) % len(ids)] if cur in ids else ids[0]
-        self._show_gpu(self.gpu_sel)  # 标签先切过去, 数值等下一次读取
-        self.settings["gpu_id"] = self.gpu_sel
+        names = [n for _, n in self.gpu_list]
+        menu = tk.Menu(self.root, tearoff=0)
+        self._gpu_var = tk.StringVar(value=self.gpu_cur)  # 保持引用, 否则选中标记不显示
+        for i, (hwid, name) in enumerate(self.gpu_list):
+            label = f"{name} #{names[:i + 1].count(name)}" if names.count(name) > 1 else name  # 同型号多卡加序号区分
+            menu.add_radiobutton(label=label, value=hwid, variable=self._gpu_var,
+                                 command=lambda h=hwid: self._select_gpu(h))
+        chip = self.gpu_chip
+        menu.tk_popup(chip.winfo_rootx(), chip.winfo_rooty() + chip.winfo_height())
+
+    def _select_gpu(self, hwid):
+        self.gpu_sel = hwid
+        self._show_gpu(hwid)  # 标签先切过去, 数值等下一次读取
+        self.settings["gpu_id"] = hwid
         self._save_settings()
         self.collector.configure(self.settings)
 
     def _show_gpu(self, hwid):
         self.gpu_cur = hwid
         name = next((n for h, n in self.gpu_list if h == hwid), "")
-        multi = len(self.gpu_list) > 1  # 只有一块时只显示型号, 不带切换箭头
-        self._set(self.gpu_chip, f"{short_gpu(name)}  ⇄" if multi else short_gpu(name))
+        multi = len(self.gpu_list) > 1  # 只有一块时只显示型号, 不带下拉标记
+        self._set(self.gpu_chip, f"{short_gpu(name)}  ▾" if multi else short_gpu(name))
         self.gpu_chip.config(cursor="hand2" if multi else "")
 
     def _update_gpu(self, d):
@@ -860,7 +1004,7 @@ class App(Dialogs):
         if d["gpu_id"] is None and self.gpu_sel:
             # 用户固定的显卡暂时不在列表里 (断连/重新编号): 不冒充另一块卡。
             self.gpu_cur = self.gpu_sel
-            self._set(self.gpu_chip, "已选显卡（暂未连接）")
+            self._set(self.gpu_chip, "已选显卡（暂未连接）  ▾" if len(self.gpu_list) > 1 else "已选显卡（暂未连接）")
             self.gpu_chip.config(cursor="hand2" if len(self.gpu_list) > 1 else "")
         else:
             self._show_gpu(d["gpu_id"] or self.gpu_list[0][0])
@@ -869,43 +1013,75 @@ class App(Dialogs):
 
     def _card(self, parent, title, collapse_key=None):
         """分组卡片, 返回放内容的 body 框架 (body.master 是卡片本身)。
-        collapse_key: 点击标题收起/展开, 状态以此为键存进设置, 下次启动保持; 第一次默认展开。"""
+        collapse_key: 点击标题行收起/展开 (左侧箭头指示), 状态以此为键存进设置, 下次启动保持; 第一次默认展开。
+        收起后标题行右侧显示摘要 (body.summary), 不展开也能看到关键读数。"""
         card = tk.Frame(parent, bg=CARD, padx="10p", pady="7p", highlightthickness=1, highlightbackground=BORDER)
         head = tk.Frame(card, bg=CARD)
         head.pack(fill="x")
+        expanded_glyph, collapsed_glyph, glyph_font = self._chevrons()
+        collapsed = collapse_key in self.settings.get("collapsed", [])
+        # 不可收起的卡片也放一个同色 (看不见) 的箭头占位, 各卡片标题左对齐
+        arrow = tk.Label(head, text=collapsed_glyph if collapsed else expanded_glyph, bg=CARD,
+                         fg=MUTED if collapse_key else CARD, font=glyph_font)
+        gap = head.winfo_pixels("4p")
+        arrow.pack(side="left", padx=(0, gap))
         title_label = tk.Label(head, text=title, bg=CARD, fg=MUTED, font=(FONT, 9, "bold"))
         title_label.pack(side="left")
         body = tk.Frame(card, bg=CARD)
         body.head = head
         body.title_label = title_label
-        collapsed = collapse_key in self.settings.get("collapsed", [])
+        body.summary = tk.Label(head, text="", bg=CARD, fg=FG, font=(NUM, 10, "bold"))
+        # 内容行与标题文字左对齐 (箭头悬在左侧), 层级一目了然
+        body_pack = {"fill": "x", "pady": ("4p", 0), "padx": (arrow.winfo_reqwidth() + gap, 0)}
         if not collapsed:
-            body.pack(fill="x", pady=("4p", 0))
+            body.pack(**body_pack)
         if collapse_key:
-            arrow = tk.Label(head, text="▸" if collapsed else "▾", bg=CARD, fg=MUTED, font=(FONT, 12))
-            arrow.pack(side="right")
+            def set_summary(text, color):
+                self._set(body.summary, text, color)
+                show = bool(text) and not body.winfo_manager()
+                if show != bool(body.summary.winfo_manager()):
+                    body.summary.pack(side="right") if show else body.summary.pack_forget()
 
             def toggle(_=None):
                 keys = set(self.settings.get("collapsed", []))
                 if body.winfo_manager():
                     body.pack_forget()
-                    arrow.config(text="▸")
+                    arrow.config(text=collapsed_glyph)
                     keys.add(collapse_key)
                 else:
-                    body.pack(fill="x", pady=("4p", 0))
-                    arrow.config(text="▾")
+                    body.pack(**body_pack)
+                    arrow.config(text=expanded_glyph)
                     keys.discard(collapse_key)
+                set_summary(body.summary.cget("text"), None)
                 self.settings["collapsed"] = sorted(keys)
+                self._sync_main_scroll()
                 self._save_settings()
-            body.toggle = toggle
+
+            def hover(on):
+                for w in (arrow, title_label):
+                    w.config(fg=FG if on else MUTED)
+            body.toggle, body.set_summary, body.hover = toggle, set_summary, hover
             self._bind_toggle(body)
         return body
 
+    def _chevrons(self):
+        """展开/收起箭头: 优先用 Windows 自带的 Segoe MDL2 Assets 图标字体 (系统设置等程序同款), 没有就用三角符号。"""
+        if not hasattr(self, "_chevron_glyphs"):
+            from tkinter import font
+            if "Segoe MDL2 Assets" in font.families(self.root):
+                self._chevron_glyphs = ("", "", ("Segoe MDL2 Assets", 7))  # ChevronDownMed / ChevronRightMed
+            else:
+                self._chevron_glyphs = ("▾", "▸", (FONT, 10))
+        return self._chevron_glyphs
+
     @staticmethod
     def _bind_toggle(body):
+        """整个标题行都可点击, 悬停时标题和箭头高亮。标题行后加的控件需再调用一次。"""
         for w in (body.head, *body.head.winfo_children()):
             w.config(cursor="hand2")
             w.bind("<Button-1>", body.toggle)
+            w.bind("<Enter>", lambda _: body.hover(True))
+            w.bind("<Leave>", lambda _: body.hover(False))
 
     def _group_boxes(self):
         """可选分组卡片, 顺序与 dialogs.GROUP_NAMES 一致。"""
@@ -978,9 +1154,6 @@ class App(Dialogs):
             self.tray.set_tip("\n".join(["硬件监控", *temps]))
             if self.root.state() == "normal" and self.root.winfo_viewable():
                 self.render(data)
-                if not self.centered:
-                    self.centered = True
-                    self.center()
         error = self.collector.storage_error
         if error and error != self._storage_notice:
             self._storage_notice = error
@@ -995,12 +1168,13 @@ class App(Dialogs):
         if fg is not None and str(label.cget("fg")) != fg:
             label.config(fg=fg)
 
-    def _rows(self, box, rows, empty_text, make_value):
-        """动态行: 仅当行集合变化时才重建, 否则只更新数值。rows: [(key, 名称, 数值文本, 颜色)]
-        key 须包含名称: 只用序号的话, 数量不变但换了风扇时名称会对不上。"""
+    def _rows(self, box, rows, empty_text, make_value, summarize=None):
+        """动态行: 仅当行集合变化时才重建, 否则只更新数值。rows: [(key, 名称, 数值文本, 颜色, 数值)]
+        key 须包含名称: 只用序号的话, 数量不变但换了风扇时名称会对不上。
+        summarize(可见行的数值列表) -> (文本, 颜色): 卡片收起时显示在标题行右侧。"""
         group = getattr(box, "pref_group", "other")
         filtered = []
-        for index, (key, name, text, color) in enumerate(rows):
+        for index, (key, name, text, color, value) in enumerate(rows):
             pref_key = f"sensor:{group}:{key}"
             # Old settings used an enumeration index. Migrate only an unambiguous
             # name; identical devices need their own stable hardware identity.
@@ -1011,8 +1185,10 @@ class App(Dialogs):
             self.sensor_names[pref_key] = name
             pref = self.settings["display"].get(pref_key, {})
             if pref.get("visible", True):
-                filtered.append((pref.get("order", 100), index, (key, pref.get("name") or name, text, color)))
-        rows = [r for _, _, r in sorted(filtered)]
+                filtered.append((pref.get("order", 100), index, (key, pref.get("name") or name, text, color), value))
+        if summarize and hasattr(box, "set_summary"):
+            box.set_summary(*summarize([v for *_, v in filtered if v is not None]))
+        rows = [r for _, _, r, _ in sorted(filtered, key=lambda f: f[:2])]
         keys = [(r[0], r[1]) for r in rows]
         if getattr(box, "_keys", None) != keys:
             for w in box.winfo_children():
@@ -1058,18 +1234,18 @@ class App(Dialogs):
             ids = d.get("sensor_ids", {}).get(group, [])
             return ids[index] if index < len(ids) else "legacy:" + name
         self._rows(self.case_box,
-                   [(sensor_id("case_fans", i, n), n, f"{rpm:.0f} RPM", FG if rpm else MUTED)
+                   [(sensor_id("case_fans", i, n), n, f"{rpm:.0f} RPM", FG if rpm else MUTED, rpm)
                     for i, (n, rpm) in enumerate(d["case_fans"])],
-                   "未检测到风扇", self._value)
+                   "未检测到风扇", self._value, rpm_summary)
         for kind, box in self.extra_boxes.items():
             self._rows(box,
-                       [(sensor_id("extra_temps", i, n), n, f"{t:.0f} °C", temp_color(t))
+                       [(sensor_id("extra_temps", i, n), n, f"{t:.0f} °C", temp_color(t), t)
                         for i, (k, n, t) in enumerate(d["extra_temps"]) if k == kind],
-                       "未检测到", self._value)
+                       "未检测到", self._value, temp_summary)
         pumps = d.get("pumps", [])
         self._rows(self.pump_box,
-                   [(sensor_id("pumps", i, n), n, f"{rpm:.0f} RPM", None) for i, (n, rpm) in enumerate(pumps)],
-                   "", self._value)
+                   [(sensor_id("pumps", i, n), n, f"{rpm:.0f} RPM", None, rpm) for i, (n, rpm) in enumerate(pumps)],
+                   "", self._value, rpm_summary)
         # 卡片是否显示按"过滤后还有没有可见行"判断: 全部隐藏时不该再提示"未检测到"。
         has = [d["net_up"] is not None or d["net_down"] is not None, bool(router),
                bool(self.case_box._keys), bool(self.pump_box._keys)] + [
@@ -1142,8 +1318,8 @@ class App(Dialogs):
         order = sorted(zip(keys, self.optional, shown), key=lambda row: prefs.get(row[0], {}).get("order", 100))
         for _, w, ok in order:
             if ok:
-                w.pack(fill="x", pady=("6p", 0), before=self.footer)
-        self._update_main_minimum()
+                w.pack(fill="x", pady=("6p", 0), before=self.content_end)
+        self._sync_main_scroll()
 
 
 if __name__ == "__main__":

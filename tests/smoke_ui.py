@@ -61,6 +61,56 @@ with patch("collector.sensors.read", side_effect=read), patch("autostart.sync"),
             app.show_history()
             assert app.history_win is history_window and history_window.state() == "normal", "History window did not restore"
             app.show_settings()
+            app.root.update()
+            settings_window = app.settings_win
+            def find(widget, kind, test=lambda w: True):
+                for child in widget.winfo_children():
+                    if isinstance(child, kind) and test(child):
+                        return child
+                    found = find(child, kind, test)
+                    if found is not None:
+                        return found
+            def row_titled(page, title):
+                label = find(app.settings_pages[page], monitor.tk.Label, lambda w: w.cget("text") == title)
+                assert label is not None, f"Missing settings row: {title}"
+                return label.master.master
+            # Sidebar navigation shows exactly one page; Ctrl+Tab cycles pages.
+            for key in app.settings_pages:
+                app.settings_select(key)
+                app.root.update()
+                assert [k for k, page in app.settings_pages.items() if page.winfo_ismapped()] == [key]
+            app.settings_select("general")
+            settings_window.event_generate("<Control-Tab>")
+            assert app._settings_page == "monitor"
+            # Dependent rows follow their master switch and save immediately.
+            fan_switch = row_titled("alerts", "高温时风扇低转速提醒").switch
+            fan_min = find(row_titled("alerts", "最低转速").control, ttk.Spinbox)
+            assert fan_min.instate(["disabled"]), "Fan options enabled while fan alert is off"
+            fan_switch.invoke()
+            assert app.settings["alerts"]["fan_enabled"] and fan_min.instate(["!disabled"])
+            fan_switch.invoke()
+            assert not app.settings["alerts"]["fan_enabled"] and fan_min.instate(["disabled"])
+            app.settings_select("alerts")
+            app.root.update()
+            cooldown = find(row_titled("alerts", "提醒间隔").control, ttk.Spinbox)
+            cooldown.delete(0, "end")
+            cooldown.insert(0, "99999")
+            cooldown.event_generate("<FocusOut>")
+            assert app.settings["alerts"]["cooldown"] == 7200 and cooldown.get() == "7200", "Out-of-range value not clamped"
+            app.settings_select("router")
+            app.root.update()
+            url_row = row_titled("router", "指标地址")
+            url_entry = find(url_row.control, ttk.Entry)
+            assert url_entry.instate(["disabled"]), "Router options enabled while router is off"
+            row_titled("router", "显示路由器状态").switch.invoke()
+            assert app.settings["router"]["enabled"] and url_entry.instate(["!disabled"])
+            url_entry.delete(0, "end")
+            url_entry.insert(0, "ftp://router")
+            url_entry.event_generate("<FocusOut>")
+            assert url_entry.get() == config.DEFAULTS["router"]["url"] and url_row.desc.cget("fg") == monitor.RED, "Invalid URL accepted"
+            row_titled("router", "显示路由器状态").switch.invoke()
+            assert not app.settings["router"]["enabled"]
+            app.settings_select("general")
             app.show_customization()
             app.root.update_idletasks()
             def descendants(widget):
@@ -84,6 +134,12 @@ with patch("collector.sensors.read", side_effect=read), patch("autostart.sync"),
             tree.selection_set("cpu_temp")
             tree.event_generate("<<TreeviewSelect>>")
             assert entry.get() == "处理器温度测试", "Draft name lost when selection changed"
+            # Space toggles visibility and greys the row; "恢复默认" restores the current group.
+            tree.focus_set()
+            tree.event_generate("<space>")
+            assert "hidden" in tree.item("cpu_temp", "tags") and tree.set("cpu_temp", "shown") == "已隐藏"
+            next(w for w in widgets if isinstance(w, ttk.Button) and w.cget("text") == "恢复默认").invoke()
+            assert tree.item("cpu_temp", "tags") == "" and tree.set("cpu_temp", "name") == "CPU 温度", "Reset kept draft edits"
             next(w for w in widgets if isinstance(w, ttk.Button) and w.cget("text") == "取消").invoke()
             assert not app.settings["display"], "Cancel applied draft settings"
             assert app.root.grab_current() is app.settings_win, "Parent modal grab not restored"
@@ -133,14 +189,67 @@ with patch("collector.sensors.read", side_effect=read), patch("autostart.sync"),
             app.render(dict(app.data, router=router))
             assert app.router_box.master.winfo_manager() == "pack"
             assert app.router_vals["uptime"].cget("text") == "5天9小时14分"
-            app.router_box.toggle()
-            assert not app.router_box.winfo_manager() and "router" in app.settings["collapsed"]
-            app.router_box.toggle()
-            assert app.router_box.winfo_manager() == "pack" and "router" not in app.settings["collapsed"]
+            # The window size belongs to the user: content changes never resize it.
+            # Cards scroll under a fixed toolbar; the overlay scrollbar never changes card width.
+            app.root.update()
+            width, minimum = app.root.minsize()
+            device_row = app.metric_blocks["cpu_temp"][0].master.master
+            device_height = device_row.winfo_height()
+            assert minimum == app.root.winfo_pixels("200p")
+            tall = app.root.winfo_pixels("900p")
+            app.root.geometry(f"{width}x{tall}")
+            app.root.update()
+            assert app.root.winfo_height() == tall, "Window height is capped"
+            assert not app.main_scrollbar.winfo_ismapped(), "Scrollbar shown although content fits"
+            card_width = app.router_box.master.winfo_width()
+            for height in (minimum, minimum + app.root.winfo_pixels("80p")):
+                app.root.geometry(f"{width}x{height}")
+                app.root.update()
+                assert app.main_scrollbar.winfo_ismapped(), "Expanded router should overflow a short window"
+                assert app.router_box.master.winfo_width() == card_width, "Scrollbar changed card width"
+                assert app.btn_bar.winfo_ismapped() and app.btn_bar.winfo_rooty() + app.btn_bar.winfo_height() <= app.root.winfo_rooty() + app.root.winfo_height(), "Toolbar not pinned inside the window"
+                card_height = app.router_box.master.winfo_height()
+                app.main_canvas.yview_moveto(0)
+                app.values["cpu_temp"].event_generate("<MouseWheel>", delta=-120)
+                app.root.update()
+                assert app.main_canvas.yview()[0] > 0, "Wheel over a label did not scroll"
+                app.router_box.toggle()
+                app.root.update()
+                assert not app.router_box.winfo_manager() and "router" in app.settings["collapsed"]
+                assert app.router_box.master.winfo_height() < card_height
+                assert app.root.winfo_height() == height, "Collapse resized the window"
+                assert device_row.winfo_height() == device_height, "Collapse stretched device cards"
+                assert app.root.minsize()[1] == minimum, "Expanded content changed minimum height"
+                app.router_box.toggle()
+                app.root.update()
+                assert app.router_box.winfo_manager() == "pack" and "router" not in app.settings["collapsed"]
+                assert app.root.winfo_height() == height
+                assert device_row.winfo_height() == device_height
+            # A collapsed group keeps its key reading in the header.
+            app.case_box.toggle()
+            app.render(app.data)
+            assert app.case_box.summary.winfo_manager() == "pack" and app.case_box.summary.cget("text").endswith("RPM")
+            app.case_box.toggle()
+            assert not app.case_box.summary.winfo_manager()
+            # The user's window geometry is remembered.
+            app._save_geometry()
+            assert app.settings["window"]["height"] == app.root.winfo_height()
             app.render(dict(app.data, router=openwrt.empty_reading()))
             assert app.router_state.cget("text") == "未连接"
             app.render(dict(app.data, router=None))
             assert not app.router_box.master.winfo_manager()
+            app.settings["display"] = {key: {"visible": False} for key in app.groups}
+            app._apply_display()
+            app.render(app.data)
+            app.root.update()
+            assert not app.main_scrollbar.winfo_ismapped(), "Scrollbar stayed visible when content fits"
+            assert app.main_canvas.yview() == (0.0, 1.0), "View did not reset after content shrank"
+            app.values["cpu_temp"].event_generate("<MouseWheel>", delta=-120)
+            app.root.update()
+            assert app.main_canvas.yview() == (0.0, 1.0), "Fitting content scrolled into empty space"
+            app.settings["display"] = {}
+            app._apply_display()
+            app.render(app.data)
             app.show_floating()
             assert app.float_win.winfo_exists()
             app.hide_floating()
