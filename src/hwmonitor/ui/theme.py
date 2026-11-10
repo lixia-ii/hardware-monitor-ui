@@ -173,6 +173,10 @@ def switch_png(width, height, track, border, knob, on):
 
 def apply_style(root):
     """ttk 控件 (按钮、输入框、开关等) 换成深色, 与主界面一致。返回自绘图片, 调用方须保持引用。"""
+    # 下拉框收起时滚轮只用于滚动页面，避免悬停就改动并保存选项。
+    # 弹出的列表有独立的绑定，仍可滚动；方向键选择也不受影响。
+    for sequence in ("<MouseWheel>", "<Button-4>", "<Button-5>"):
+        root.unbind_class("TCombobox", sequence)
     s = ttk.Style(root)
     s.theme_use("clam")
     s.configure(".", background=BG, foreground=FG, font=(FONT, 9))
@@ -213,6 +217,11 @@ def apply_style(root):
               bordercolor=[("focus", ACCENT)], lightcolor=[("focus", ACCENT)],
               darkcolor=[("focus", ACCENT)], selectbackground=[("focus", ACCENT)],
               selectforeground=[("focus", "white")])
+    # 下拉箭头按下/悬停: clam 默认是浅色块, 改成与数值框一致的深色; 弹出列表用深色细边框
+    s.map("TCombobox", background=[("pressed", BORDER), ("active", "#2a2e37")],
+          arrowcolor=[("disabled", MUTED)])
+    s.configure("ComboboxPopdownFrame", background=CARD, bordercolor=BORDER, lightcolor=CARD,
+                darkcolor=CARD, relief="solid", borderwidth=1)
     s.configure("TNotebook", background=BG, borderwidth=0, bordercolor=BG, lightcolor=BG, darkcolor=BG)
     s.configure("TNotebook.Tab", background=CARD, foreground=SUB, padding=("14p", "7p"),
                 bordercolor=BORDER, lightcolor=CARD, darkcolor=CARD, focuscolor=TRACK)

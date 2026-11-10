@@ -6,6 +6,7 @@ import math
 import os
 from pathlib import Path
 import tempfile
+from urllib.parse import urlsplit, urlunsplit
 
 from hwmonitor import paths
 
@@ -14,10 +15,13 @@ DEFAULT_ALERTS = {"enabled": True, "cpu_temp": 85, "gpu_temp": 85, "cooldown": 3
                   "fan_min": 300, "fan_duration": 30}
 DEFAULT_FLOATING = {"enabled": False, "x": 40, "y": 40, "topmost": True, "autohide": True,
                     "opacity": 1.0, "show_mem": True, "show_net": True}
+DEFAULT_ROUTER = {"enabled": False, "url": "http://192.168.1.1:9100/metrics", "nic": None}
+DEFAULT_REMOTE = {"enabled": False, "url": "http://192.168.1.2:8085/data.json", "nic": None, "type": "hwmonitor"}
 DEFAULTS = {"close_action": "ask", "topmost": False, "collapsed": [], "floating": DEFAULT_FLOATING,
             "alerts": DEFAULT_ALERTS, "interval": 1.0, "gpu_id": None, "nic_ids": None,
             "display": {}, "history_enabled": True,
-            "router": {"enabled": False, "url": "http://192.168.1.1:9100/metrics", "nic": None},
+            "router": DEFAULT_ROUTER,
+            "routers": [{**DEFAULT_ROUTER, "id": "primary", "name": "路由器 1"}],
             "web": {"enabled": False, "lan": False, "port": 8085},
             "window": None}
 
@@ -28,6 +32,36 @@ def number(value, default, low, high):
         return min(high, max(low, n)) if math.isfinite(n) and not isinstance(value, bool) else default
     except (TypeError, ValueError, OverflowError):
         return default
+
+
+def device_url(value, kind="openwrt"):
+    if not isinstance(value, str) or len(value.strip()) > 200:
+        return None
+    try:
+        parts = urlsplit(value.strip())
+        parts.port  # 校验端口范围。
+        if parts.scheme.lower() not in ("http", "https") or not parts.hostname or parts.netloc.endswith(":"):
+            return None
+        if kind == "hwmonitor" and parts.path in ("", "/"):
+            parts = parts._replace(path="/data.json")
+        return urlunsplit(parts)
+    except ValueError:
+        return None
+
+
+def legacy_router(routers):
+    """旧版只认识单台 OpenWrt: 取第一台 OpenWrt 设备, 远程电脑的地址不能写进旧字段。"""
+    first = next((cfg for cfg in routers if cfg.get("type", "openwrt") == "openwrt"), None)
+    return {k: first[k] for k in DEFAULT_ROUTER} if first else copy.deepcopy(DEFAULT_ROUTER)
+
+
+def new_device_name(routers):
+    """返回未被占用的最小编号名称 "设备 N", 删除后再添加不会重名。"""
+    names = {cfg.get("name") for cfg in routers}
+    n = 1
+    while f"设备 {n}" in names:
+        n += 1
+    return f"设备 {n}"
 
 
 def validate(raw):
@@ -54,6 +88,37 @@ def validate(raw):
             out["router"]["url"] = url.strip()[:200]
         nic = router.get("nic")
         out["router"]["nic"] = nic if isinstance(nic, str) and nic else None
+    routers = raw.get("routers")
+    if isinstance(routers, list):
+        out["routers"] = []
+        used = set()
+        for i, item in enumerate(routers):
+            if not isinstance(item, dict):
+                continue
+            ident = item.get("id")
+            if not isinstance(ident, str) or not ident or ident in used:
+                ident = f"router-{i + 1}"
+                while ident in used:
+                    ident += "-copy"
+            used.add(ident)
+            kind = item.get("type", "openwrt")
+            if kind not in ("openwrt", "hwmonitor"):
+                continue
+            cfg = copy.deepcopy(DEFAULT_REMOTE if kind == "hwmonitor" else DEFAULT_ROUTER)
+            cfg["enabled"] = item.get("enabled") is True
+            url = item.get("url")
+            valid_url = device_url(url, kind)
+            if valid_url:
+                cfg["url"] = valid_url
+            nic = item.get("nic")
+            cfg["nic"] = nic if isinstance(nic, str) and nic else None
+            name = item.get("name")
+            cfg.update(id=ident, name=name.strip()[:60] if isinstance(name, str) and name.strip() else f"设备 {i + 1}")
+            out["routers"].append(cfg)
+    else:
+        out["routers"] = [{**out["router"], "id": "primary", "name": "路由器 1"}]
+    # 保留旧字段供旧版本读取；列表为空时不能重新启用已删除的路由器。
+    out["router"] = legacy_router(out["routers"])
     web = raw.get("web")
     if isinstance(web, dict):
         out["web"] = {"enabled": web.get("enabled") is True, "lan": web.get("lan") is True,
@@ -88,6 +153,13 @@ def validate(raw):
                 out["display"][key] = {"visible": value.get("visible", True) is not False,
                                        "name": str(value.get("name", ""))[:60],
                                        "order": int(number(value.get("order"), 100, 0, 10000))}
+    legacy = out["display"].pop("router", None)
+    if legacy:
+        for cfg in out["routers"]:
+            pref = copy.deepcopy(legacy)
+            if len(out["routers"]) > 1:
+                pref["name"] = ""
+            out["display"].setdefault("router:" + cfg["id"], pref)
     return out
 
 

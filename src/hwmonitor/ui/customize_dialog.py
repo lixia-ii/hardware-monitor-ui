@@ -18,16 +18,30 @@ class CustomizeDialogMixin:
         w, body = self._dialog("自定义显示", parent=parent, resizable=True)
         self.customization_win = w
         self._size_dialog(w, "460p", "420p")
-        names = {**METRIC_NAMES, **GROUP_NAMES, **self.sensor_names}
+        group_names = {}
+        for key, label in GROUP_NAMES.items():
+            if key == "router":
+                group_names.update({"router:" + cfg["id"]: cfg["name"] for cfg in self.settings["routers"]})
+            else:
+                group_names[key] = label
+        names = {**METRIC_NAMES, **group_names, **self.sensor_names}
         prefs = copy.deepcopy(self.settings["display"])
         # Only offer known sensors; disconnected preferences remain preserved.
         categories = {"CPU 指标": [k for k in METRIC_NAMES if not k.startswith("gpu_")],
                       "显卡指标": [k for k in METRIC_NAMES if k.startswith("gpu_")],
-                      "可选分组": list(GROUP_NAMES)}
+                      "可选分组": list(group_names)}
         for group, label in GROUP_NAMES.items():
             keys = [k for k in self.sensor_names if k.startswith(f"sensor:{group}:")]
             if keys:
                 categories[label + " · 传感器"] = keys
+        for cfg in self.settings["routers"]:
+            prefix = "sensor:device:" + cfg["id"] + ":"
+            keys = [key for key in self.sensor_names if key.startswith(prefix)]
+            if keys:
+                label = cfg["name"] + " · 远程指标"
+                while label in categories:
+                    label += "（同名设备）"
+                categories[label] = keys
         defaults = {label: list(keys) for label, keys in categories.items()}  # "恢复默认"用的原始顺序
         for keys in categories.values():
             keys.sort(key=lambda k: prefs.get(k, {}).get("order", 100))

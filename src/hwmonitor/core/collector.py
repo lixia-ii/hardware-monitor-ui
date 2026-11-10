@@ -1,4 +1,5 @@
-"""One long-lived sampling thread; no Tk calls and no per-tick processes/threads."""
+"""Long-lived hardware sampling thread and bounded router worker pool; no Tk calls."""
+from concurrent.futures import ThreadPoolExecutor
 import copy
 import logging
 import queue
@@ -7,7 +8,7 @@ import time
 
 from hwmonitor import paths
 from hwmonitor.core.history import HistoryStore, sample
-from hwmonitor.sensors import openwrt, reading
+from hwmonitor.sensors import openwrt, reading, remote
 
 log = logging.getLogger(__name__)
 
@@ -27,6 +28,9 @@ class Collector(threading.Thread):
         self.history_rows = queue.SimpleQueue()
         self.storage_error = None
         self.router = openwrt.Router()
+        self.routers = {"primary": self.router}
+        self.device_types = {"primary": "openwrt"}
+        self.router_pool = None
 
     def configure(self, settings):
         with self.lock:
@@ -50,21 +54,40 @@ class Collector(threading.Thread):
             pass
         self.results.put_nowait(data)
 
-    def _read_router(self, options):
+    def _read_router(self, options, router=None):
         """路由器独立于传感器: 离线或解析出错只影响路由器卡片, 也不参与退避计数。"""
         if not options["enabled"]:
             return None
         try:
-            return self.router.read(options["url"], options["nic"])
+            return (router or self.router).read(options["url"], options["nic"])
         except Exception:
-            log.exception("Router sampling failed")
-            return openwrt.empty_reading()
+            log.exception("Device sampling failed")
+            return remote.empty_reading() if options.get("type") == "hwmonitor" else openwrt.empty_reading()
+
+    def _read_routers(self, options):
+        active = [cfg for cfg in options["routers"] if cfg["enabled"]]
+        ids = {cfg["id"] for cfg in active}
+        self.routers = {key: value for key, value in self.routers.items() if key in ids}
+        self.device_types = {key: value for key, value in self.device_types.items() if key in ids}
+        for cfg in active:
+            kind = cfg.get("type", "openwrt")
+            if cfg["id"] not in self.routers or self.device_types.get(cfg["id"]) != kind:
+                self.routers[cfg["id"]] = (remote.Device() if kind == "hwmonitor" else
+                                            self.router if cfg["id"] == "primary" else openwrt.Router())
+            self.device_types[cfg["id"]] = kind
+
+        def read_one(cfg):
+            result = self._read_router(cfg, self.routers[cfg["id"]])
+            return dict(result, id=cfg["id"], name=cfg["name"], type=cfg.get("type", "openwrt"))
+
+        return list(self.router_pool.map(read_one, active)) if self.router_pool else [read_one(cfg) for cfg in active]
 
     def run(self):
         store = None
         last_sample = -float("inf")
         failures = 0
         try:
+            self.router_pool = ThreadPoolExecutor(max_workers=4, thread_name_prefix="router")
             try:
                 paths.DATA.mkdir(parents=True, exist_ok=True)
                 store = HistoryStore(paths.DATA / "history.sqlite3")
@@ -87,7 +110,8 @@ class Collector(threading.Thread):
                     failures = 0
                     if self.web is not None:
                         self.web.publish(self.source.last_tree if self.source is not None else None)
-                    data["router"] = self._read_router(options["router"])
+                    data["routers"] = self._read_routers(options)
+                    data["router"] = data["routers"][0] if data["routers"] else None
                     data["collection_ms"] = round((time.monotonic() - started) * 1000, 1)
                     data["sample_time"] = time.time()
                     data["selection"] = (options["gpu_id"], options["nic_ids"])
@@ -109,14 +133,17 @@ class Collector(threading.Thread):
                     log.exception("Sampling failed")
                     data = reading.empty_reading()
                     data.update(error="采集失败，请查看本地日志", sample_time=time.time(),
-                                selection=(options["gpu_id"], options["nic_ids"]),
-                                router=self._read_router(options["router"]))
+                                selection=(options["gpu_id"], options["nic_ids"]))
+                    data["routers"] = self._read_routers(options)
+                    data["router"] = data["routers"][0] if data["routers"] else None
                     self._put(data)
                 delay = options["interval"]
                 if failures:
                     delay = max(delay, min(30, 2 ** min(failures, 5)))
                 self.wake.wait(max(0, delay - (time.monotonic() - started)))
         finally:
+            if self.router_pool:
+                self.router_pool.shutdown(wait=True)
             if store:
                 store.close()
             if self.source is not None:

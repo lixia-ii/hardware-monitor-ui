@@ -1,8 +1,9 @@
-"""设置窗口: 左侧导航 + 设置行 (常规、监控、告警、路由器、数据与关于), 修改即时生效并保存。"""
+"""设置窗口: 左侧导航 + 设置行 (常规、监控、告警、设备、数据与关于), 修改即时生效并保存。"""
 import copy
 import logging
 import os
 import tkinter as tk
+from uuid import uuid4
 from tkinter import ttk, filedialog
 
 from hwmonitor import __version__, paths, settings
@@ -20,7 +21,7 @@ class SettingsDialogMixin:
 
     # 设置窗口左侧导航: (键, 标题, Segoe MDL2 Assets 图标)
     SETTINGS_PAGES = (("general", "常规", "\ue713"), ("monitor", "监控", "\ue9d9"), ("alerts", "告警", "\uea8f"),
-                      ("router", "路由器", "\ue968"), ("data", "数据与关于", "\ue946"))
+                      ("router", "设备", "\ue968"), ("data", "数据与关于", "\ue946"))
 
     def show_settings(self, page=None):
         """设置窗口 (参考 Windows 11 设置): 左侧导航切换页面, 每项设置一行, 左边标题和说明、右边控件,
@@ -66,7 +67,8 @@ class SettingsDialogMixin:
             w.bind(seq, lambda _, s=step: cycle(s))
         # 点空白处、开关、导航等非输入控件时, 让输入框失去焦点, 触发它的 <FocusOut> 保存 (Tk 点框架不会转移焦点)
         def blur(event):
-            if isinstance(event.widget, tk.Misc) and event.widget.winfo_class() not in INPUTS:
+            # ttk 按钮按下时已自行获得焦点；再抢到窗口会打断这次点击。
+            if isinstance(event.widget, tk.Misc) and event.widget.winfo_class() not in (*INPUTS, "TButton"):
                 w.focus_set()
         w.bind("<Button-1>", blur, add="+")
         self.settings_select(page or "general")
@@ -147,13 +149,18 @@ class SettingsDialogMixin:
         canvas.bind("<Configure>", sync)
         def wheel(event):
             if canvas.winfo_ismapped() and scroll.winfo_manager():
-                if event.widget.winfo_class() not in ("TCombobox", "TSpinbox"):
+                if event.widget.winfo_class() != "TSpinbox":
                     canvas.yview_scroll(-int(event.delta / 120), "units")
         parent.winfo_toplevel().bind("<MouseWheel>", wheel, add="+")
         # Keyboard navigation keeps focused controls inside the viewport.
+        # FocusIn 也会发给获得焦点控件的每一层父容器; 整组、整页这类容器放不进视口, 只处理真正的焦点控件,
+        # 否则点按钮或下拉框时页面会跳动 (按钮要再点一次, 下拉列表按跳动前的位置弹出)。
+        # 下拉框的弹出列表是独立的顶层窗口, 也不参与。
+        toplevel = parent.winfo_toplevel()
         def reveal(event):
             widget = event.widget
-            if not canvas.winfo_ismapped() or not str(widget).startswith(str(body) + "."):
+            if (not canvas.winfo_ismapped() or not isinstance(widget, tk.Misc) or widget is not widget.focus_get()
+                    or widget.winfo_toplevel() is not toplevel or not str(widget).startswith(str(body) + ".")):
                 return
             y = widget.winfo_rooty() - body.winfo_rooty()
             top, height = canvas.canvasy(0), canvas.winfo_height()
@@ -393,30 +400,167 @@ class SettingsDialogMixin:
         shared_rows.append(number_row(group, "cooldown", "提醒间隔", "同一项告警两次提醒之间的最短间隔", 30, 7200, "秒"))
         refresh()
 
+    def _save_routers(self, items):
+        active_keys = {"router-settings:" + item["id"] for item in items}
+        self.settings["collapsed"] = [key for key in self.settings["collapsed"]
+                                      if not key.startswith("router-settings:") or key in active_keys]
+        # 已删除设备的主界面收起状态、显示偏好和远程指标偏好一并清理, 不在配置里残留。
+        removed = {item["id"] for item in self.settings["routers"]} - {item["id"] for item in items}
+        if removed:
+            stale = {"router:" + ident for ident in removed} | ({"router"} if "primary" in removed else set())
+            prefixes = tuple("sensor:device:" + ident + ":" for ident in removed)
+            self.settings["collapsed"] = [key for key in self.settings["collapsed"] if key not in stale]
+            display = self.settings["display"]
+            for key in [key for key in display if key in stale or key.startswith(prefixes)]:
+                del display[key]
+            for key in [key for key in self.sensor_names if key.startswith(prefixes)]:
+                del self.sensor_names[key]
+        self.settings["router"] = settings.legacy_router(items)
+        self._save_option("routers", items)
+
     def _router_page(self, page):
-        cfg = self.settings["router"]
+        group = self._group(page, "设备管理")
+        row = self._row(group, "加入设备", "加入后在下方展开设备，选择类型并设置名称和地址")
+        editors = tk.Frame(page, bg=BG)
+        editors.pack(fill="x")
+        # 每台设备一个独立容器, 只增删或替换对应的那一个: 整体重建会让页面瞬间变短, 滚动条闪烁、页面跳动。
+        def build(cfg, before=None):
+            box = tk.Frame(editors, bg=BG)
+            box.pack(fill="x", **({"before": before} if before is not None else {}))
+            def rebuild():
+                current = next(item for item in self.settings["routers"] if item["id"] == cfg["id"])
+                build(current, before=box)  # 先建好新的再删旧的, 页面高度不会中途缩短
+                box.destroy()
+            self._router_editor(box, cfg, rebuild)
+        def add():
+            cfg = dict(settings.DEFAULT_ROUTER, id=uuid4().hex, name=settings.new_device_name(self.settings["routers"]))
+            self._save_routers([*self.settings["routers"], cfg])
+            build(cfg)
+        ttk.Button(row.control, text="加入设备", style="Card.TButton", command=add).pack()
+        for cfg in self.settings["routers"]:
+            build(cfg)
+
+        # 帮助的折叠键不用 router-settings: 前缀, 否则删除设备时会被当作残留键清掉
+        _, group = self._fold_section(page, "配置帮助", "settings:router-help")
+        self._row(group, "接入远程电脑",
+                  "1. 在对方电脑打开“硬件监控”，进入 设置 → 常规 → 网页服务\n"
+                  "2. 开启“启用网页服务”和“允许局域网访问”\n"
+                  "3. 加入设备后，在下方设备内选择“远程电脑”，填写对方显示的地址，例如 http://192.168.1.2:8085/data.json，开启监控")
+        self._row(group, "接入 OpenWrt 数据接口",
+                  "1. 安装 prometheus-node-exporter-lua 和 prometheus-node-exporter-lua-thermal（温度）\n"
+                  "2. 把监听接口设为 lan：uci set prometheus-node-exporter-lua.main.listen_interface='lan'，"
+                  "uci commit 后重启该服务\n"
+                  "3. 在浏览器打开上面的地址，能看到 node_load1 等文本即可；启用并连接后可选择 WAN 网卡")
+
+    def _fold_section(self, page, title, key):
+        """可折叠的分组: 标题行 (箭头、标题、展开/收起) + 内容框架, 折叠状态以 key 存入 collapsed。
+        点击标题行或聚焦后按回车/空格切换。返回 (标题行, 内容框架)。"""
+        expanded_glyph, collapsed_glyph, glyph_font = self._chevrons()
+        head = tk.Frame(page, bg=BG, cursor="hand2", takefocus=True)
+        head.pack(fill="x", pady=("12p", "6p"))
+        arrow = tk.Label(head, bg=BG, fg=SUB, font=glyph_font)
+        arrow.pack(side="left", padx=(0, "6p"))
+        head.label = tk.Label(head, text=title, bg=BG, fg=SUB, font=(FONT, 9, "bold"), anchor="w")
+        head.label.pack(side="left", fill="x", expand=True)
+        action = tk.Label(head, bg=BG, fg=MUTED, font=(FONT, 9))
+        action.pack(side="right")
+        group = tk.Frame(page, bg=BG)
+
+        def refresh():
+            collapsed = key in self.settings["collapsed"]
+            arrow.config(text=collapsed_glyph if collapsed else expanded_glyph)
+            action.config(text="展开" if collapsed else "收起")
+            if collapsed:
+                group.pack_forget()
+            else:
+                group.pack(fill="x", after=head)
+
+        def toggle(_=None):
+            # 收起前先结束输入，保存尚未失焦的名称或地址。
+            head.focus_set()
+            keys = set(self.settings["collapsed"])
+            if key in keys:
+                keys.remove(key)
+            else:
+                keys.add(key)
+            self.settings["collapsed"] = sorted(keys)
+            refresh()
+            self._save_settings()
+            return "break"
+
+        head.toggle = toggle
+        for widget in (head, arrow, head.label, action):
+            widget.config(cursor="hand2")
+            widget.bind("<Button-1>", toggle)
+        head.bind("<Return>", toggle)
+        head.bind("<space>", toggle)
+        refresh()
+        return head, group
+
+    def _router_editor(self, page, cfg, rebuild):
+        """单台设备的设置: 可折叠的标题行 + 设置行。page 是这台设备独占的容器; 更换类型时 rebuild() 原位重建。"""
+        is_remote = cfg.get("type") == "hwmonitor"
         def save(**changes):
-            self._save_option("router", {**self.settings["router"], **changes})
-        group = self._group(page, "OpenWrt 路由器")
-        row = self._row(group, "显示路由器状态", "在主界面显示路由器温度、CPU、内存、负载和 WAN 网速")
+            items = self.settings["routers"]
+            self._save_routers([{**item, **changes} if item["id"] == cfg["id"] else item for item in items])
+        head, group = self._fold_section(page, cfg["name"], "router-settings:" + cfg["id"])
+        title = head.label
+        head.router_id = cfg["id"]
+        head.router_body = group
+        type_row = self._row(group, "设备类型", "支持 OpenWrt 和远程电脑；更换类型后请确认指标地址")
+        def change_type(index):
+            kind = ("openwrt", "hwmonitor")[index]
+            if kind == cfg.get("type", "openwrt"):
+                return
+            current = next(item for item in self.settings["routers"] if item["id"] == cfg["id"])
+            old_default = settings.DEFAULT_REMOTE if is_remote else settings.DEFAULT_ROUTER
+            new_default = settings.DEFAULT_REMOTE if kind == "hwmonitor" else settings.DEFAULT_ROUTER
+            url = new_default["url"] if current["url"] == old_default["url"] else current["url"]
+            save(type=kind, url=url, nic=None)
+            rebuild()
+        self._choice(type_row, ("OpenWrt", "远程电脑"), 1 if is_remote else 0, change_type)
+        row = self._row(group, "设备名称", "远程电脑 · 硬件监控" if is_remote else "OpenWrt · 路由器")
+        name = tk.StringVar(value=cfg["name"])
+        name_entry = ttk.Entry(row.control, textvariable=name, width=18, style="Card.TEntry")
+        name_entry.pack(side="left")
+        def save_name(_=None):
+            value = name.get().strip()[:60] or cfg["name"]
+            name.set(value)
+            save(name=value)
+            title.config(text=value)
+        name_entry.bind("<FocusOut>", save_name)
+        name_entry.bind("<Return>", save_name)
+        def remove():
+            current = next((item for item in self.settings["routers"] if item["id"] == cfg["id"]), None)
+            if current is None or not self._confirm_delete_device(name.get().strip() or current["name"]):
+                return
+            self._save_routers([item for item in self.settings["routers"] if item["id"] != cfg["id"]])
+            page.destroy()
+        ttk.Button(row.control, text="删除", style="Card.TButton", command=remove).pack(side="left", padx=("6p", 0))
+        row = self._row(group, "显示设备状态", "在主界面显示远程电脑的硬件数据" if is_remote else "在主界面显示路由器温度、CPU、内存、负载和 WAN 网速")
         self._switch(row, cfg["enabled"], lambda on: (save(enabled=on), self._enable(rows, on)))
-        url_row = self._row(group, "指标地址", "路由器上 prometheus-node-exporter-lua 的 /metrics 地址", stacked=True)
+        url_row = self._row(group, "指标地址", "对方电脑的网页服务地址（/data.json），只填 http://IP:端口 会自动补全" if is_remote else "路由器上 prometheus-node-exporter-lua 的 /metrics 地址", stacked=True)
         url = tk.StringVar(value=cfg["url"])
         entry = ttk.Entry(url_row.control, textvariable=url, style="Card.TEntry")
         entry.pack(fill="x")
         def save_url(_=None):
-            value = url.get().strip()
-            if value.lower().startswith(("http://", "https://")):
+            value = settings.device_url(url.get(), "hwmonitor" if is_remote else "openwrt")
+            if value:
+                url.set(value)
                 self._row_message(url_row)
-                if value[:200] != self.settings["router"]["url"]:
+                if value[:200] != next((item["url"] for item in self.settings["routers"] if item["id"] == cfg["id"]), cfg["url"]):
                     save(url=value[:200])
             else:
-                url.set(self.settings["router"]["url"])
-                self._row_message(url_row, "地址需以 http:// 或 https:// 开头，已恢复为上次保存的地址。", error=True)
+                url.set(next((item["url"] for item in self.settings["routers"] if item["id"] == cfg["id"]), cfg["url"]))
+                self._row_message(url_row, "请输入有效的 http:// 或 https:// 地址，已恢复为上次保存的地址。", error=True)
         entry.bind("<FocusOut>", save_url)
         self._finish_edit(entry, save_url)
+        if is_remote:
+            rows = [url_row]
+            self._enable(rows, cfg["enabled"])
+            return
         nic_row = self._row(group, "WAN 网卡", "用于统计上下行网速；自动时优先 pppoe-wan / wan，否则取流量最大的网卡")
-        router = (self.data or {}).get("router") or {}
+        router = next((item for item in (self.data or {}).get("routers", []) if item["id"] == cfg["id"]), {})
         nics = [None] + router.get("nics", [])
         if cfg["nic"] and cfg["nic"] not in nics:
             nics.append(cfg["nic"])
@@ -425,12 +569,6 @@ class SettingsDialogMixin:
         rows = [url_row, nic_row]
         self._enable(rows, cfg["enabled"])
 
-        group = self._group(page, "配置帮助")
-        self._row(group, "在路由器上安装数据接口",
-                  "1. 安装 prometheus-node-exporter-lua 和 prometheus-node-exporter-lua-thermal（温度）\n"
-                  "2. 把监听接口设为 lan：uci set prometheus-node-exporter-lua.main.listen_interface='lan'，"
-                  "uci commit 后重启该服务\n"
-                  "3. 在浏览器打开上面的地址，能看到 node_load1 等文本即可；启用并连接后可选择 WAN 网卡")
 
     def _data_page(self, page):
         group = self._group(page, "历史数据")

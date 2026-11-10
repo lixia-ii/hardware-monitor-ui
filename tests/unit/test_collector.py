@@ -66,4 +66,45 @@ class CollectorTests(unittest.TestCase):
             store.return_value.load.return_value = []
             worker.start()
             worker.join(timeout=3)
-        self.assertIs(worker.results.get_nowait()["router"], reading)
+        result = worker.results.get_nowait()
+        self.assertEqual({k: result["router"][k] for k in reading}, reading)
+        self.assertEqual(result["routers"][0]["id"], "primary")
+
+    def test_multiple_routers_keep_state_and_isolate_failures(self):
+        cfg = settings.validate({"routers": [
+            {"id": "a", "name": "主路由", "enabled": True, "url": "http://a/metrics"},
+            {"id": "b", "name": "旁路由", "enabled": True, "url": "http://b/metrics"},
+            {"id": "c", "enabled": False}]})
+        worker = Collector(cfg)
+        with patch("hwmonitor.core.collector.openwrt.Router") as factory:
+            # Distinct instances must retain independent network counters and backoff.
+            from unittest.mock import Mock
+            a, b = Mock(), Mock()
+            factory.side_effect = [a, b]
+            a.read.side_effect = RuntimeError("offline")
+            b.read.return_value = dict(openwrt.empty_reading(), offline=False, up=42)
+            with self.assertLogs("hwmonitor.core.collector", "ERROR"):
+                first = worker._read_routers(cfg)
+                second = worker._read_routers(cfg)
+            self.assertEqual(factory.call_count, 2)
+            self.assertTrue(first[0]["offline"])
+            self.assertEqual(second[1]["up"], 42)
+            self.assertEqual([r["id"] for r in first], ["a", "b"])
+            b.read.assert_called_with("http://b/metrics", None)
+            cfg["routers"] = [cfg["routers"][1]]
+            worker._read_routers(cfg)
+            self.assertEqual(set(worker.routers), {"b"})
+
+    def test_router_pool_samples_concurrently(self):
+        from concurrent.futures import ThreadPoolExecutor
+        import threading
+        cfg = settings.validate({"routers": [{"id": key, "enabled": True} for key in ("a", "b")]})
+        worker = Collector(cfg)
+        barrier = threading.Barrier(2, timeout=2)
+        def read(*args):
+            barrier.wait()
+            return dict(openwrt.empty_reading(), offline=False)
+        with ThreadPoolExecutor(max_workers=2) as pool, patch("hwmonitor.sensors.openwrt.Router.read", side_effect=read):
+            worker.router_pool = pool
+            result = worker._read_routers(cfg)
+        self.assertTrue(all(not r["offline"] for r in result))

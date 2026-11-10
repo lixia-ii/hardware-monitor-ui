@@ -26,7 +26,7 @@ from hwmonitor.ui.floating import FloatingWindowMixin
 from hwmonitor.ui.history_dialog import HistoryDialogMixin
 from hwmonitor.ui.info_window import InfoWindowMixin
 from hwmonitor.ui.settings_dialog import SettingsDialogMixin
-from hwmonitor.ui.theme import (BG, BORDER, CARD, CHIP_HOVER, ERR_BG, ERR_BORDER, FG, FONT, MUTED, NUM,
+from hwmonitor.ui.theme import (BG, BORDER, CARD, CHIP_HOVER, ERR_BG, ERR_BORDER, FG, FIELD, FONT, MUTED, NUM,
                                 RED, SUB, TRACK, set_icon)
 
 
@@ -92,18 +92,12 @@ class MainWindow(SettingsDialogMixin, CustomizeDialogMixin, HistoryDialogMixin, 
         self.net_box.pack_forget()
         self.net_vals = self._rate_labels(self.net_box.head, "net_up", "net_down")
 
-        # OpenWrt 路由器 (prometheus-node-exporter-lua): 设置里启用后才显示, 标题行右侧是 WAN 网速
-        self.router_box = self._card(main, "路由器", collapse_key="router")
-        self.router_state = tk.Label(self.router_box.head, text="", bg=CARD, fg=MUTED, font=(FONT, 8))
-        self.router_state.pack(side="left", padx=("6p", 0))
-        self.router_rates = self._rate_labels(self.router_box.head, "up", "down_rate")
-        self._bind_toggle(self.router_box)  # 标题行后加的标签也要能点击收起
-        self.router_vals = {}
-        for key, title in (("temp", "温度"), ("cpu_load", "CPU"), ("mem_load", "内存"), ("load1", "负载"), ("uptime", "运行时间")):
-            f = tk.Frame(self.router_box, bg=CARD)
-            f.pack(fill="x", pady="1p")
-            tk.Label(f, text=title, bg=CARD, fg=SUB, font=(FONT, 9)).pack(side="left")
-            self.router_vals[key] = self._value(f)
+        # 设备 (OpenWrt / 远程电脑): 每台设备一张卡片, 由 _render_routers 按需创建。
+        # router_group 只是"设备"分组在 GROUP_NAMES 顺序里的占位, 本身从不显示; 排版见 _layout。
+        self.router_group = tk.Frame(main, bg=BG)
+        self.router_order = []
+        self.router_widgets = {}
+        self.router_box = None
 
         self.case_box = self._card(main, "机箱风扇", collapse_key="case")
 
@@ -138,7 +132,7 @@ class MainWindow(SettingsDialogMixin, CustomizeDialogMixin, HistoryDialogMixin, 
         self.history_btn.pack(side="right", padx=(0, "6p"))
         ttk.Button(self.btn_bar, text="设置", command=self.show_settings, cursor="hand2").pack(side="left")
         # 可选分组: 没有数据就不显示。按此顺序排在底栏之前
-        self.optional = [b.master for b in self._group_boxes()]
+        self.optional = [b if b is self.router_group else b.master for b in self._group_boxes()]
         self.shown = ()
 
         r.protocol("WM_DELETE_WINDOW", self.close)
@@ -573,18 +567,37 @@ class MainWindow(SettingsDialogMixin, CustomizeDialogMixin, HistoryDialogMixin, 
         title_label.pack(side="left")
         body = tk.Frame(card, bg=CARD)
         body.head = head
+        body.arrow = arrow
         body.title_label = title_label
-        body.summary = tk.Label(head, text="", bg=CARD, fg=FG, font=(NUM, 10, "bold"))
+        # 收起后的摘要: [MAX] 粗体数字 + 小号单位, 与网速、设备徽标的样式一致
+        body.summary = summary = tk.Frame(head, bg=CARD)
+        summary.unit = tk.Label(summary, text="", bg=CARD, fg=FG, font=(NUM, 8, "bold"), width=3, anchor="w")
+        summary.unit.pack(side="right", anchor="s", pady=(0, "1p"))
+        summary.num = tk.Label(summary, text="", bg=CARD, fg=FG, font=(NUM, 10, "bold"))
+        summary.num.pack(side="right", padx=(0, "2p"))
+        summary.tag = tk.Label(summary, text="", bg=FIELD, fg=SUB, font=(NUM, 7, "bold"), padx="3p", pady=0)
+        summary.parts = ("", "", "", FG)
         # 内容行与标题文字左对齐 (箭头悬在左侧), 层级一目了然
         body_pack = {"fill": "x", "pady": ("4p", 0), "padx": (arrow.winfo_reqwidth() + gap, 0)}
         if not collapsed:
             body.pack(**body_pack)
         if collapse_key:
-            def set_summary(text, color):
-                self._set(body.summary, text, color)
-                show = bool(text) and not body.winfo_manager()
+            def set_summary(tag, num, unit, color):
+                summary.parts = (tag, num, unit, color)
+                self._set(summary.num, num, color)
+                self._set(summary.unit, unit, color)
+                self._set(summary.tag, tag)
+                if bool(tag) != bool(summary.tag.winfo_manager()):
+                    if tag:
+                        summary.tag.pack(side="right", padx=(0, "5p"))
+                    else:
+                        summary.tag.pack_forget()
+                show = bool(num) and not body.winfo_manager()
                 if show != bool(body.summary.winfo_manager()):
-                    body.summary.pack(side="right") if show else body.summary.pack_forget()
+                    if show:
+                        body.summary.pack(side="right")
+                    else:
+                        body.summary.pack_forget()
 
             def toggle(_=None):
                 keys = set(self.settings.get("collapsed", []))
@@ -596,7 +609,9 @@ class MainWindow(SettingsDialogMixin, CustomizeDialogMixin, HistoryDialogMixin, 
                     body.pack(**body_pack)
                     arrow.config(text=expanded_glyph)
                     keys.discard(collapse_key)
-                set_summary(body.summary.cget("text"), None)
+                set_summary(*summary.parts)
+                if hasattr(body, "sync_header"):  # 设备卡片: 展开后标题行只保留名称
+                    body.sync_header()
                 self.settings["collapsed"] = sorted(keys)
                 self._sync_main_scroll()
                 if body.winfo_manager():
@@ -623,7 +638,10 @@ class MainWindow(SettingsDialogMixin, CustomizeDialogMixin, HistoryDialogMixin, 
     @staticmethod
     def _bind_toggle(body):
         """整个标题行都可点击, 悬停时标题和箭头高亮。标题行后加的控件需再调用一次。"""
-        for w in (body.head, *body.head.winfo_children()):
+        pending = [body.head]
+        while pending:
+            w = pending.pop()
+            pending.extend(w.winfo_children())
             w.config(cursor="hand2")
             w.bind("<Button-1>", body.toggle)
             w.bind("<Enter>", lambda _: body.hover(True))
@@ -631,20 +649,20 @@ class MainWindow(SettingsDialogMixin, CustomizeDialogMixin, HistoryDialogMixin, 
 
     def _group_boxes(self):
         """可选分组卡片, 顺序与 dialogs.GROUP_NAMES 一致。"""
-        return (self.net_box, self.router_box, self.case_box, self.pump_box, *self.extra_boxes.values())
+        return (self.net_box, self.router_group, self.case_box, self.pump_box, *self.extra_boxes.values())
 
     @staticmethod
-    def _rate_labels(head, up, down):
+    def _rate_labels(head, up, down, compact=False):
         """标题行右侧的 ↑ / ↓ 速率, 返回 {键: (数字标签, 单位标签)}。"""
         labels = {}
         for key, arrow in ((up, "↑"), (down, "↓")):  # 从右往左排
             # 单位小字、随量级变色, 数字粗体; 各自定宽, 位数或单位变化时不跳
             unit = tk.Label(head, text="", bg=CARD, fg=MUTED, font=(NUM, 8, "bold"), width=4, anchor="w")
             unit.pack(side="right", anchor="s", pady=(0, "1p"))
-            num = tk.Label(head, text="--", bg=CARD, fg=MUTED, font=(NUM, 11, "bold"), width=4, anchor="e")
-            num.pack(side="right", padx=(0, "2p"))
+            num = tk.Label(head, text="--", bg=CARD, fg=MUTED, font=(NUM, 10 if compact else 11, "bold"), width=4, anchor="e")
+            num.pack(side="right", padx=(0, 0 if compact else "2p"))
             tk.Label(head, text=arrow, bg=CARD, fg=MUTED, font=(FONT, 9)).pack(
-                side="right", padx=("10p" if key == down else "6p", 0))
+                side="right", padx=(("1p" if key == down else 0) if compact else ("10p" if key == down else "6p"), 0))
             labels[key] = (num, unit)
         return labels
 
@@ -769,9 +787,9 @@ class MainWindow(SettingsDialogMixin, CustomizeDialogMixin, HistoryDialogMixin, 
         for k, used, total in (("mem_load", "mem_used", "mem_total"), ("gpu_mem_load", "gpu_mem_used", "gpu_mem_total")):
             self._set(self.values[k + "_gb"], fmt_gb(d[used], d[total]))
         self._render_rates(self.net_vals, d)
-        router = d.get("router")
-        if router:
-            self._render_router(router)
+        routers = d.get("routers", [d["router"]] if d.get("router") else [])
+        router = bool(routers)
+        self._render_routers(routers)
         cpu_fan = d["cpu_fan"]
         self._set(self.values["cpu_fan"], "--" if cpu_fan is None else f"{cpu_fan:.0f} RPM", MUTED if cpu_fan is None else FG)
         if d["gpu_fan"] is not None:
@@ -813,10 +831,205 @@ class MainWindow(SettingsDialogMixin, CustomizeDialogMixin, HistoryDialogMixin, 
             self._set(num, n, MUTED if d[k] is None else FG)  # 数字固定白色, 只有单位随量级变色
             self._set(unit, u, color)
 
-    def _render_router(self, r):
-        self._set(self.router_state, "未连接" if r["offline"] else r["nic"] or "", RED if r["offline"] else MUTED)
-        self._render_rates(self.router_rates, r)
-        vals = self.router_vals
+    def _device_header(self, box, kind):
+        """单行标题: 箭头 | 名称 (弹性占宽, 过长省略) | 利用率徽标 | 分隔线 | ↓ ↑ 网速。
+        徽标和网速使用固定字符宽度, 多台设备上下对齐; 离线提示占用第二个徽标的位置, 不挤占名称。"""
+        from tkinter import font
+        head = box.head
+        box.arrow.pack_forget()
+        box.title_label.pack_forget()
+        box.arrow.grid(row=0, column=0, sticky="w", padx=(0, "4p"))
+        box.title_label.config(width=1, anchor="w")
+        box.title_label.grid(row=0, column=1, sticky="ew", padx=(0, "6p"))
+        box.title_font = font.Font(font=box.title_label.cget("font"))
+        box.device_name = ""
+        box.fit_key = None
+        head.columnconfigure(1, weight=1)
+        metrics = tk.Frame(head, bg=CARD)
+        metrics.grid(row=0, column=2)
+        def chip(text, column):
+            label = tk.Label(metrics, text=text, bg=FIELD, fg=SUB, font=(NUM, 8),
+                             width=6, padx="2p", pady="1p", anchor="center")
+            label.grid(row=0, column=column, padx=(0 if column == 0 else "3p", 0))
+            return label
+        box.cpu_usage = chip("C --%", 0)
+        if kind == "hwmonitor":
+            box.gpu_usage = chip("G --%", 1)
+        state = chip("", 1)
+        state.text_font = font.Font(font=state.cget("font"))  # 截断网卡名时测量用
+        if kind == "hwmonitor":
+            state.grid_remove()  # 只在离线时替换显卡徽标
+        box.header_state = state
+        box.header_divider = tk.Frame(head, bg=BORDER, width=1, height="12p")
+        box.header_divider.grid(row=0, column=3, padx="6p")
+        rates_frame = tk.Frame(head, bg=CARD)
+        rates_frame.grid(row=0, column=4, sticky="e")
+        box.header_rates = rates_frame
+        rates = {}
+        keys = ("net_down", "net_up") if kind == "hwmonitor" else ("down_rate", "up")
+        for column, (key, arrow) in enumerate(zip(keys, ("↓", "↑"))):
+            group = tk.Frame(rates_frame, bg=CARD)
+            group.grid(row=0, column=column, padx=(0 if column == 0 else "4p", 0))
+            tk.Label(group, text=arrow, bg=CARD, fg=SUB, font=(NUM, 8)).pack(side="left")
+            num = tk.Label(group, text="--", bg=CARD, fg=FG, font=(NUM, 9, "bold"), width=4, anchor="e")
+            num.pack(side="left")
+            unit = tk.Label(group, bg=CARD, fg=MUTED, font=(NUM, 7), width=4, anchor="w")
+            unit.pack(side="left", padx=("1p", 0))
+            rates[key] = (num, unit)
+        box.title_label.bind("<Configure>", lambda _: self._fit_device_name(box))
+        box.sync_header = lambda: self._sync_device_header(box)
+        box.sync_header()
+        return state, rates
+
+    @staticmethod
+    def _sync_device_header(box):
+        """收起时标题行显示利用率、网卡和网速摘要; 展开后这些读数都在下方, 标题行只留名称。
+        离线提示是状态而非读数, 展开时也保留。"""
+        expanded = bool(box.winfo_manager())
+        offline = box.header_state.cget("text") == "未连接"
+        shown = {box.cpu_usage: not expanded, box.header_divider: not expanded, box.header_rates: not expanded,
+                 box.header_state: offline or (not expanded and box.device_type != "hwmonitor")}
+        if box.device_type == "hwmonitor":
+            shown[box.gpu_usage] = not expanded and not offline  # 离线提示占用显卡徽标的位置
+        for widget, show in shown.items():
+            if show != bool(widget.winfo_manager()):
+                if show:
+                    widget.grid()
+                else:
+                    widget.grid_remove()
+
+    def _fit_device_name(self, box):
+        width = box.title_label.winfo_width()
+        if box.fit_key == (box.device_name, width):  # 名称和宽度都没变时不必重新测量
+            return
+        box.fit_key = (box.device_name, width)
+        text = self._elide(box.title_font, box.device_name, max(0, width - 4)) if width > 1 else box.device_name
+        self._set(box.title_label, text)
+
+    @staticmethod
+    def _elide(fnt, text, available):
+        """超出 available 像素时截断并加省略号。"""
+        if fnt.measure(text) <= available:
+            return text
+        while text and fnt.measure(text + "…") > available:
+            text = text[:-1]
+        return text + "…"
+
+    def _router_section(self, parent):
+        vals = {}
+        for key, title in (("temp", "温度"), ("cpu_load", "CPU"), ("mem_load", "内存"), ("load1", "负载"),
+                           ("uptime", "运行时间"), ("nic", "WAN 网卡"), ("net", "WAN 网速")):
+            frame = tk.Frame(parent, bg=CARD)
+            frame.pack(fill="x", pady="1p")
+            tk.Label(frame, text=title, bg=CARD, fg=SUB, font=(FONT, 9)).pack(side="left")
+            vals[key] = self._value(frame)
+        return vals
+
+    def _render_routers(self, routers):
+        ids = {r.get("id", "primary") for r in routers}
+        for ident in list(self.router_widgets):
+            if ident not in ids:
+                self.router_widgets.pop(ident)[0].master.destroy()
+        self.router_order = [r.get("id", "primary") for r in routers]
+        for r in routers:
+            ident = r.get("id", "primary")
+            kind = r.get("type", "openwrt")
+            if ident in self.router_widgets and self.router_widgets[ident][0].device_type != kind:
+                self.router_widgets.pop(ident)[0].master.destroy()
+            if ident not in self.router_widgets:
+                key = "router" if ident == "primary" else "router:" + ident
+                box = self._card(self.main_content, r.get("name") or "路由器", collapse_key=key)
+                box.device_type = kind
+                state, rates = self._device_header(box, kind)
+                if kind == "hwmonitor":
+                    box.pref_group = "device:" + ident
+                    widgets = (state, rates, {})
+                else:
+                    widgets = (state, rates, self._router_section(box))
+                self._bind_toggle(box)
+                self.router_widgets[ident] = (box, widgets)
+            box, widgets = self.router_widgets[ident]
+            name = r.get("name") or "路由器"
+            pref = self.settings["display"].get("router:" + ident, {})
+            if box.device_name != (pref.get("name") or name):
+                box.device_name = pref.get("name") or name
+                self._fit_device_name(box)
+            cpu = None if r["offline"] else r.get("cpu_load")
+            self._set(box.cpu_usage, "C --%" if cpu is None else f"C {cpu:.0f}%", MUTED if cpu is None else FG)
+            if kind == "hwmonitor":
+                gpu = None if r["offline"] else r.get("gpu_load")
+                self._set(box.gpu_usage, "G --%" if gpu is None else f"G {gpu:.0f}%", MUTED if gpu is None else FG)
+                self._render_remote(box, r, widgets)
+            else:
+                self._render_router(r, widgets, box)
+        # 便于单路由器界面访问首台；卡片和收起状态始终按设备 ID 保存。
+        self.router_box = self.router_widgets[routers[0].get("id", "primary")][0] if routers else None
+        if routers:
+            self.router_state, self.router_rates, self.router_vals = self.router_widgets[routers[0].get("id", "primary")][1]
+
+    def _render_remote(self, box, data, widgets):
+        state, rates, vals = widgets
+        text = "未连接" if data["offline"] else ""
+        if state.cget("text") != text:
+            self._set(state, text, RED)
+            box.sync_header()
+        self._render_rates(rates, data)
+        rows = []
+        for key, label in (("cpu_temp", "CPU 温度"), ("cpu_load", "CPU 利用率"),
+                           ("gpu_temp", "显卡温度"), ("gpu_load", "显卡利用率"),
+                           ("mem_load", "内存"), ("gpu_mem_load", "显存"),
+                           ("cpu_fan", "CPU 风扇"), ("gpu_fan", "显卡风扇")):
+            value = data[key]
+            unit = "°C" if key.endswith("temp") else "RPM" if key.endswith("fan") else "%"
+            text = "--" if value is None else f"{value:.0f} {unit}"
+            if key in ("mem_load", "gpu_mem_load") and value is not None:
+                prefix = "mem" if key == "mem_load" else "gpu_mem"
+                gb = fmt_gb(data[prefix + "_used"], data[prefix + "_total"])
+                text = (gb + "  " if gb else "") + text
+            rows.append((key, label, text, temp_color(value) if unit == "°C" else MUTED if value is None else FG,
+                         value if unit == "°C" else None))
+        net = self._rate_text(data, "net_down", "net_up")
+        rows.append(("net", "网速", net, MUTED if net == "--" else FG, None))
+        for group in ("case_fans", "pumps"):
+            for index, (name, rpm) in enumerate(data[group]):
+                identities = data["sensor_ids"][group]
+                identity = identities[index] if index < len(identities) else name
+                rows.append((group + ":" + identity, name, f"{rpm:.0f} RPM", FG, None))
+        for index, (kind, name, temp) in enumerate(data["extra_temps"]):
+            identities = data["sensor_ids"]["extra_temps"]
+            identity = identities[index] if index < len(identities) else kind + ":" + name
+            rows.append(("temp:" + identity, name, f"{temp:.0f} °C", temp_color(temp), temp))
+        self._rows(box, rows, "暂无传感器数据", self._value)
+        vals.clear()
+        vals.update(box._vals)
+
+    @staticmethod
+    def _rate_text(d, down, up):
+        """展开内容里的网速行: "↓ 52 KB/s  ↑ 5.1 KB/s", 都没有数据时为 "--"。"""
+        if d.get(down) is None and d.get(up) is None:
+            return "--"
+        parts = []
+        for key, arrow in ((down, "↓"), (up, "↑")):
+            num, unit, _ = fmt_rate(d.get(key))
+            parts.append(f"{arrow} {num} {unit}".rstrip())
+        return "  ".join(parts)
+
+    def _render_router(self, r, widgets=None, box=None):
+        state, rates, vals = widgets or (self.router_state, self.router_rates, self.router_vals)
+        text = "未连接" if r["offline"] else r["nic"] or ""
+        if widgets:
+            # 徽标固定宽度, 各设备的列保持对齐; pppoe-wan 等较长的网卡名截断显示。
+            fnt = state.text_font
+            text = self._elide(fnt, text, fnt.measure("0") * int(state.cget("width")))
+        if state.cget("text") != text:
+            self._set(state, text, RED if r["offline"] else MUTED)
+            if box is not None:
+                box.sync_header()
+        self._render_rates(rates, r)
+        nic = None if r["offline"] else r["nic"]
+        self._set(vals["nic"], nic or "--", MUTED if nic is None else FG)
+        net = self._rate_text(r, "down_rate", "up")
+        self._set(vals["net"], net, MUTED if net == "--" else FG)
         self._set(vals["temp"], "--" if r["temp"] is None else f"{r['temp']:.0f} °C", temp_color(r["temp"]))
         cpu = r["cpu_load"]
         self._set(vals["cpu_load"], "--" if cpu is None else f"{cpu:.0f} %", MUTED if cpu is None else FG)
@@ -853,22 +1066,31 @@ class MainWindow(SettingsDialogMixin, CustomizeDialogMixin, HistoryDialogMixin, 
         self.groups = dict(zip(GROUP_NAMES, self._group_boxes()))
         for key, box in self.groups.items():
             box.pref_group = key
-            box.title_label.config(text=prefs.get(key, {}).get("name") or GROUP_NAMES[key])
+            if key != "router":
+                box.title_label.config(text=prefs.get(key, {}).get("name") or GROUP_NAMES[key])
             box._keys = None
         self.shown = None
 
     def _layout(self, has):
         prefs = self.settings["display"]
-        keys = list(self.groups)
-        shown = tuple(ok and prefs.get(key, {}).get("visible", True) for key, ok in zip(keys, has))
+        items = []
+        for (key, _), widget, available in zip(self.groups.items(), self.optional, has):
+            if key == "router":
+                for ident in self.router_order:
+                    pref_key = "router:" + ident
+                    pref = prefs.get(pref_key, {})
+                    items.append((pref_key, self.router_widgets[ident][0].master,
+                                  available and pref.get("visible", True), pref.get("order", 100)))
+            else:
+                pref = prefs.get(key, {})
+                items.append((key, widget, available and pref.get("visible", True), pref.get("order", 100)))
+        shown = tuple(items)
         if shown == self.shown:
             return
         self.shown = shown
-        for w in self.optional:
-            w.pack_forget()
-        order = sorted(zip(keys, self.optional, shown), key=lambda row: prefs.get(row[0], {}).get("order", 100))
-        for _, w, ok in order:
-            if ok:
-                w.pack(fill="x", pady=("6p", 0), before=self.content_end)
+        for widget in (*self.optional, *(box.master for box, _ in self.router_widgets.values())):
+            widget.pack_forget()
+        for _, widget, visible, _ in sorted(items, key=lambda item: item[3]):
+            if visible:
+                widget.pack(fill="x", pady=("6p", 0), before=self.content_end)
         self._sync_main_scroll()
-

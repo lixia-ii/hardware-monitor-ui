@@ -1,4 +1,5 @@
 """读取 OpenWrt 上 prometheus-node-exporter-lua 的 /metrics: 温度、CPU、内存、WAN 网速与运行时长。"""
+import http.client
 import logging
 import re
 import time
@@ -98,7 +99,8 @@ class Router:
         try:
             with urllib.request.urlopen(url, timeout=timeout) as resp:
                 metrics = parse(resp.read(4 * 1024 * 1024).decode("utf-8", "replace"))
-        except (OSError, ValueError) as e:  # URLError 是 OSError 子类; 地址格式不对是 ValueError
+        # URLError 是 OSError 子类; 地址格式不对是 ValueError; 响应被截断或格式错误是 HTTPException
+        except (OSError, ValueError, http.client.HTTPException) as e:
             logging.getLogger(__name__).debug("Router unavailable: %s", e)
             self.prev = None
             self.failures += 1

@@ -246,7 +246,7 @@ def empty_reading():
          "sensor_ids": {"case_fans": [], "pumps": [], "extra_temps": []}}
 
 
-def read(gpu_id=None, nic_ids=None, source=None):
+def read(gpu_id=None, nic_ids=None, source=None, allow_nvidia=True):
     """Read normalized metrics, device identities and sensor status from source (lhm.Sensors); missing values are None."""
     r = empty_reading()
     r["net_selection"] = None if nic_ids is None else "|".join(sorted(nic_ids))
@@ -256,7 +256,7 @@ def read(gpu_id=None, nic_ids=None, source=None):
         r["cpu_temp"] = _pick_temp([(n, v) for k, n, v, _ in d["temps"] if k == "cpu"],
                                    _CPU_PREFER)
         gpu = _main_gpu(d, gpu_id)
-        uuid_card = nvidia.card_for(None, gpu_id) if gpu_id and gpu_id.startswith("nvidia:") else None
+        uuid_card = nvidia.card_for(None, gpu_id) if allow_nvidia and gpu_id and gpu_id.startswith("nvidia:") else None
         if uuid_card:
             # Names are only a bridge when unique in BOTH providers. Identical cards
             # remain on the UUID provider until a hardware identity can be proven.
@@ -319,7 +319,7 @@ def read(gpu_id=None, nic_ids=None, source=None):
         logging.getLogger(__name__).exception("Sensor parsing failed")
         r["error"] = f"读取传感器出错: {e!r}"
 
-    if None in (r["gpu_temp"], r["gpu_fan"], r["gpu_load"], r["gpu_mem_load"]):
+    if allow_nvidia and None in (r["gpu_temp"], r["gpu_fan"], r["gpu_load"], r["gpu_mem_load"]):
         nv = nvidia.card_for(gpu_name, r["gpu_id"] or gpu_id)
         if nv:
             if r["gpu_id"] is None:

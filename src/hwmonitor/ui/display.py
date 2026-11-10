@@ -5,7 +5,7 @@ from hwmonitor.ui.theme import FG, MUTED, RED
 
 METRIC_NAMES = {"cpu_temp": "CPU 温度", "cpu_load": "CPU 利用率", "mem_load": "内存占用", "cpu_fan": "CPU 风扇",
                 "gpu_temp": "显卡温度", "gpu_load": "显卡利用率", "gpu_mem_load": "显存占用", "gpu_fan": "显卡风扇"}
-GROUP_NAMES = {"network": "网络", "router": "路由器", "case": "机箱风扇", "pump": "水冷泵", "storage": "硬盘温度", "memory": "内存温度", "network_temp": "网卡温度"}
+GROUP_NAMES = {"network": "网络", "router": "设备", "case": "机箱风扇", "pump": "水冷泵", "storage": "硬盘温度", "memory": "内存温度", "network_temp": "网卡温度"}
 DEVICE_TITLES = {"cpu_temp": "CPU", "gpu_temp": "显卡"}  # 温度隐藏后卡片标题退回设备名
 
 
@@ -45,16 +45,18 @@ def temp_color(t):
 
 
 def temp_summary(temps):
-    """收起的温度分组标题行右侧: 只显示最高温度。"""
+    """收起的温度分组标题行右侧: 只显示最高温度, 多个传感器时加 MAX 标记。
+    返回 (标记, 数字, 单位, 颜色), 没有数据时数字为空。"""
     if not temps:
-        return "", MUTED
+        return "", "", "", MUTED
     t = max(temps)
-    return (f"最高 {t:.0f} °C" if len(temps) > 1 else f"{t:.0f} °C"), temp_color(t)
+    return ("MAX" if len(temps) > 1 else ""), f"{t:.0f}", "°C", temp_color(t)
 
 
 def rpm_summary(rpms):
-    """收起的风扇/水泵分组标题行右侧: 一个显示转速, 多个显示范围。"""
+    """收起的风扇/水泵分组标题行右侧: 一个显示转速, 多个显示范围。返回值同 temp_summary。"""
     if not rpms:
-        return "", MUTED
+        return "", "", "", MUTED
     low, high = min(rpms), max(rpms)
-    return (f"{high:.0f} RPM" if round(low) == round(high) else f"{low:.0f}–{high:.0f} RPM"), FG if high else MUTED
+    num = f"{high:.0f}" if round(low) == round(high) else f"{low:.0f}–{high:.0f}"
+    return "", num, "RPM", FG if high else MUTED

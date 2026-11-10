@@ -84,6 +84,25 @@ class DialogMixin:
         w.grab_set()
         w.focus_set()
 
+    def _confirm_delete_device(self, name):
+        w, body = self._dialog("删除设备", parent=self.settings_win)
+        result = []
+        ttk.Label(body, text=f"确定要删除设备“{name}”吗？", font=(FONT, 10),
+                  wraplength="280p", justify="left").pack(anchor="w")
+        self._hint(body, "删除后将停止监控该设备。")
+        buttons = ttk.Frame(body)
+        buttons.pack(fill="x", pady=("12p", 0))
+        def confirm():
+            result.append(True)
+            w.destroy()
+        ttk.Button(buttons, text="删除", style="Accent.TButton", command=confirm).pack(side="right")
+        cancel = ttk.Button(buttons, text="取消", command=w.destroy)
+        cancel.pack(side="right", padx=(0, "6p"))
+        self._show_dialog(w)
+        cancel.focus_set()
+        w.wait_window()
+        return bool(result)
+
     def _ask_close(self):
         """询问退出还是最小化到托盘。返回 "tray" / "exit", 取消返回 None。"""
         w, body = self._dialog("关闭硬件监控")
