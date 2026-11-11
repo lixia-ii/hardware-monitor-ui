@@ -5,6 +5,7 @@ tkinter 没有托盘能力, 这里另建一个不显示的 Win32 窗口专收托
 """
 import ctypes
 import os
+import time
 from ctypes import wintypes as wt
 
 APP_ID = "HardwareMonitorUI"  # 互斥量名 / 托盘窗口类名; 改名会让新旧版本互相认不出来
@@ -65,22 +66,42 @@ k32.GetModuleHandleW.restype = wt.HMODULE
 k32.GetModuleHandleW.argtypes = [wt.LPCWSTR]
 k32.CreateMutexW.restype = wt.HANDLE
 k32.CreateMutexW.argtypes = [wt.LPVOID, wt.BOOL, wt.LPCWSTR]
+k32.CloseHandle.argtypes = [wt.HANDLE]
 shell32.Shell_NotifyIconW.argtypes = [wt.DWORD, ctypes.POINTER(NOTIFYICONDATAW)]
 
 _mutex = None  # 互斥量句柄要活到进程结束
 
 
-def acquire_single_instance():
-    """成为唯一实例返回 True; 已有实例在运行时通知它唤出窗口, 返回 False (本进程应退出)。"""
+def acquire_single_instance(wait=15):
+    """成为唯一实例返回 True; 已有实例在运行时通知它唤出窗口, 返回 False (本进程应退出)。
+
+    旧实例退出时先移除托盘, 停掉网页服务后才释放互斥量, 这短暂的间隙里互斥量还在却找不到托盘窗口:
+    此时等它释放后接替, 而不是直接退出 (否则表现为点了启动只闪一下)。
+    """
     global _mutex
-    _mutex = k32.CreateMutexW(None, False, f"Local\\{APP_ID}_SingleInstance")
-    if ctypes.get_last_error() != 183:  # ERROR_ALREADY_EXISTS
-        return True
-    u32.AllowSetForegroundWindow(-1)  # ASFW_ANY: 放权给旧实例, 它才能把窗口弹到最前
-    hwnd = u32.FindWindowW(f"{APP_ID}TrayHost", None)
-    if hwnd:
-        u32.PostMessageW(hwnd, WM_WAKE, 0, 0)
-    return False
+    deadline = time.monotonic() + wait
+    while True:
+        _mutex = k32.CreateMutexW(None, False, f"Local\\{APP_ID}_SingleInstance")
+        if ctypes.get_last_error() != 183:  # ERROR_ALREADY_EXISTS
+            return True
+        hwnd = u32.FindWindowW(f"{APP_ID}TrayHost", None)
+        if hwnd:
+            u32.AllowSetForegroundWindow(-1)  # ASFW_ANY: 放权给旧实例, 它才能把窗口弹到最前
+            u32.PostMessageW(hwnd, WM_WAKE, 0, 0)
+            return False
+        k32.CloseHandle(_mutex)
+        _mutex = None
+        if time.monotonic() >= deadline:
+            return False
+        time.sleep(0.2)
+
+
+def release_single_instance():
+    """退出时提前释放: 之后还要等采集线程关闭硬件 (可能要几秒), 这期间再启动的新实例不必等待。"""
+    global _mutex
+    if _mutex:
+        k32.CloseHandle(_mutex)
+        _mutex = None
 
 
 def dark_menus():

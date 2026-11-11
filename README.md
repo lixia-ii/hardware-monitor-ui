@@ -90,7 +90,7 @@ uci commit prometheus-node-exporter-lua
 
 ## 便携程序与开发验证
 
-便携包解压后运行 `start.bat` 或 `HardwareMonitorUI.exe` 即可，目录为 `HardwareMonitorUI.exe`、`LibreHardwareMonitor/`（硬件库）、`licenses/` 和运行后生成的 `data/`。移动时保留整个目录；任务计划程序同时兼容源码与 EXE。
+便携包解压后运行 `start.bat` 或 `HardwareMonitorUI.exe` 即可，目录为 `HardwareMonitorUI.exe`、`_internal/`（Python 运行时）、`LibreHardwareMonitor/`（硬件库）、`licenses/` 和运行后生成的 `data/`。移动时保留整个目录；任务计划程序同时兼容源码与 EXE。
 
 在 Windows PowerShell 中构建（首次需要联网下载构建依赖）：
 
@@ -98,12 +98,12 @@ uci commit prometheus-node-exporter-lua
 ./scripts/build.ps1
 ```
 
-输出 `dist/HardwareMonitorUI.exe` 与 `dist/HardwareMonitorUI-windows-x64.zip`。构建环境单独安装到 `.build/venv/`；运行依赖和构建依赖统一在 `pyproject.toml` 中固定版本（构建用 `pip install -e ".[build]"`）。
+输出程序目录 `dist/HardwareMonitorUI/`（入口 `HardwareMonitorUI.exe`，以目录形式打包，启动时无需解压）与 `dist/HardwareMonitorUI-windows-x64.zip`。构建环境单独安装到 `.build/venv/`；运行依赖和构建依赖统一在 `pyproject.toml` 中固定版本（构建用 `pip install -e ".[build]"`）。
 
 ```powershell
 python -m unittest discover -s tests -t . -v   # 单元测试 (tests/unit, 按模块分文件)
 python tests/ui/smoke_ui.py                    # 界面集成测试
-./dist/HardwareMonitorUI.exe --self-test       # 打包后自检
+./dist/HardwareMonitorUI/HardwareMonitorUI.exe --self-test   # 打包后自检
 ```
 
 GUI 集成测试使用隔离数据和模拟传感器，覆盖主界面、17,280 个历史点、设置（含网页服务）、自定义、悬浮窗、导出和退出；硬件库的数据转换、网页服务和 PawnIO 检测用模拟对象测试，不依赖真实硬件。EXE 自检使用独立实例标识，检查 .NET 硬件库能否加载（不打开硬件），在 EXE 旁的 `.build/self-test/self-test.json` 写入结果后自动退出。GitHub Actions 在 Windows 上执行测试和构建，可从工作流产物下载便携包。
@@ -156,7 +156,7 @@ hardware-monitor-ui/
 ├─ docs/                     ARCHITECTURE.md 模块分层与数据流；PLAN.md 功能计划
 ├─ .github/workflows/        Windows CI
 ├─ data/                     本地设置、历史数据库和滚动日志，不提交 Git
-├─ dist/                     最新 EXE、便携 ZIP 及随包文档，不提交 Git
+├─ dist/                     最新程序目录、便携 ZIP 及随包文档，不提交 Git
 └─ .build/                   构建环境、中间文件、自检数据，不提交 Git
 ```
 

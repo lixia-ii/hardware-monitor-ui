@@ -448,6 +448,8 @@ class MainWindow(SettingsDialogMixin, CustomizeDialogMixin, HistoryDialogMixin, 
         self.collector.stop()
         def stop():
             self.web.stop()
+            # 端口已空出, 先让出单实例: 新实例不必等下面关闭硬件 (采集线程可能正在打开内存条, 要几秒)
+            tray.release_single_instance()
             self.collector.join(timeout=8)  # 采集线程退出时关闭硬件, 释放驱动
             return True
         self._background(self.root, stop, lambda _: self.root.destroy())

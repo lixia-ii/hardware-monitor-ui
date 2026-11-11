@@ -86,6 +86,7 @@ class Collector(threading.Thread):
         store = None
         last_sample = -float("inf")
         failures = 0
+        first = True
         try:
             self.router_pool = ThreadPoolExecutor(max_workers=4, thread_name_prefix="router")
             try:
@@ -108,13 +109,17 @@ class Collector(threading.Thread):
                 try:
                     data = reading.read(options["gpu_id"], options["nic_ids"], self.source)
                     failures = 0
+                    data["selection"] = (options["gpu_id"], options["nic_ids"])
                     if self.web is not None:
                         self.web.publish(self.source.last_tree if self.source is not None else None)
+                    if first:
+                        # 首份本机数据先送出, 启动界面不必等路由器/远程设备 (外网地址可能要等到超时)
+                        first = False
+                        self._put(dict(data, routers=[], router=None, sample_time=time.time()))
                     data["routers"] = self._read_routers(options)
                     data["router"] = data["routers"][0] if data["routers"] else None
                     data["collection_ms"] = round((time.monotonic() - started) * 1000, 1)
                     data["sample_time"] = time.time()
-                    data["selection"] = (options["gpu_id"], options["nic_ids"])
                     if started - last_sample >= 5:
                         last_sample = started
                         row = (data["sample_time"], sample(data))

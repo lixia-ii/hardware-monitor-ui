@@ -16,10 +16,10 @@ jobs:
       - name: Verify frozen application
         shell: pwsh
         run: |
-          $process = Start-Process ./dist/HardwareMonitorUI.exe -ArgumentList '--self-test' -PassThru
+          $process = Start-Process ./dist/HardwareMonitorUI/HardwareMonitorUI.exe -ArgumentList '--self-test' -PassThru
           if (-not $process.WaitForExit(30000)) { $process.Kill(); throw 'EXE self-test timed out' }
           if ($process.ExitCode -ne 0) { throw 'EXE failed' }
-          $result = Get-Content dist/.build/self-test/self-test.json | ConvertFrom-Json
+          $result = Get-Content dist/HardwareMonitorUI/.build/self-test/self-test.json | ConvertFrom-Json
           if ($result.errors.Count -or -not $result.icon_available -or -not $result.lhm_loaded) { throw 'EXE self-test failed' }
       - uses: actions/upload-artifact@v4
         with:

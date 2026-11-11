@@ -49,6 +49,8 @@ HARDWARE_TYPES = {
 }
 ENABLED = ("IsCpuEnabled", "IsGpuEnabled", "IsMotherboardEnabled", "IsMemoryEnabled", "IsStorageEnabled",
            "IsNetworkEnabled", "IsControllerEnabled", "IsPsuEnabled", "IsBatteryEnabled", "IsPowerMonitorEnabled")
+# 内存条 SPD (内存温度) 逐条走 SMBus 读取, 打开要好几秒; 首次采样后再启用, 让界面先显示其他硬件
+DEFERRED = ("IsMemoryEnabled",)
 RETRY = 60  # 初始化失败后的重试间隔 (秒)
 NO_PYTHONNET = "缺少 pythonnet，CPU、显卡等传感器无法读取，点击「安装」自动安装依赖。"
 
@@ -162,6 +164,7 @@ class Sensors:
         self.computer = None
         self.failed_at = None
         self.error = None
+        self.deferred = False  # DEFERRED 里的硬件是否还没启用
         self.last_tree = None  # 最近一次成功采样, 供网页服务发布
         self.reopen = threading.Event()
 
@@ -177,7 +180,7 @@ class Sensors:
         try:
             computer = _load(self.lib_dir)()
             for name in ENABLED:
-                setattr(computer, name, True)
+                setattr(computer, name, name not in DEFERRED)
             started = time.monotonic()
             computer.Open()
             log.info("Hardware sensors opened in %.1f s", time.monotonic() - started)
@@ -189,6 +192,21 @@ class Sensors:
             self.failed_at, self.error = time.monotonic(), f"硬件传感器初始化失败：{e}"
             raise Unavailable(self.error) from e
         self.computer, self.failed_at, self.error = computer, None, None
+        self.deferred = True
+
+    def _enable_deferred(self):
+        """Open() 之后再置 True, LibreHardwareMonitorLib 会即时加入对应硬件。
+
+        pythonnet 给属性赋值时不释放 GIL, 这几秒里界面线程也会卡住; 方法调用会释放, 所以经反射 SetValue 设置。
+        """
+        self.deferred = False
+        started = time.monotonic()
+        for name in DEFERRED:
+            try:
+                self.computer.GetType().GetProperty(name).SetValue(self.computer, True)
+            except Exception:  # 失败只是少了这类硬件, 不影响其他传感器
+                log.exception("Cannot enable %s", name)
+        log.info("Deferred hardware opened in %.1f s", time.monotonic() - started)
 
     def sample(self):
         """刷新全部传感器, 返回 data.json 结构的树; 不可用时抛 Unavailable。"""
@@ -201,6 +219,8 @@ class Sensors:
             if self.failed_at is not None and time.monotonic() - self.failed_at < RETRY:
                 raise Unavailable(self.error)
             self._open()
+        elif self.deferred:
+            self._enable_deferred()
 
         def update(hw):
             try:

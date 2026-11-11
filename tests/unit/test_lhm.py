@@ -94,7 +94,12 @@ class HardwareTests(unittest.TestCase):
             tree = source.sample()
             self.assertIs(source.last_tree, tree)
             computer.Open.assert_called_once()
-            self.assertTrue(all(getattr(computer, name) is True for name in lhm.ENABLED))
+            # 首次采样不等内存条, 第二次采样再启用
+            self.assertEqual({name for name in lhm.ENABLED if getattr(computer, name) is not True}, set(lhm.DEFERRED))
+            computer.GetType.return_value.GetProperty.return_value.SetValue.assert_not_called()
+            source.sample()
+            computer.GetType.return_value.GetProperty.assert_called_with("IsMemoryEnabled")
+            computer.GetType.return_value.GetProperty.return_value.SetValue.assert_called_once_with(computer, True)
             source.request_reopen()
             source.sample()
         computer.Close.assert_called_once()
@@ -124,3 +129,18 @@ class HardwareTests(unittest.TestCase):
         source.close.assert_called_once()
         worker.reload_hardware()
         source.request_reopen.assert_called_once()
+
+    def test_first_local_reading_is_published_before_devices(self):
+        worker = Collector(settings.validate({"history_enabled": False}), Mock(ready=True))
+        queued = []
+        def read_routers(_):
+            queued.append(worker.results.get_nowait())  # 读设备 (可能要等超时) 之前, 本机数据已送出
+            return [{"id": "primary"}]
+        with patch("hwmonitor.core.collector.HistoryStore") as store, patch("hwmonitor.core.collector.reading.read", return_value={"sensors_down": False}), patch.object(worker, "_read_routers", side_effect=read_routers), patch.object(worker.wake, "wait", side_effect=lambda _: worker.stop()):
+            store.return_value.load.return_value = []
+            worker.start()
+            worker.join(timeout=3)
+        self.assertEqual(len(queued), 1)
+        self.assertEqual((queued[0]["routers"], queued[0]["router"]), ([], None))
+        self.assertIn("selection", queued[0])
+        self.assertEqual(worker.results.get_nowait()["routers"], [{"id": "primary"}])
