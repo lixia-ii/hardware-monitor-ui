@@ -3,6 +3,7 @@
 所有 .NET 调用只发生在采集线程里; 树的格式参照 LibreHardwareMonitor 0.9.6 的
 UI/TypeNode.cs (分组名)、UI/SensorNode.cs (数值格式) 和 Utilities/HttpServer.cs (JSON 字段)。
 """
+import ctypes
 from datetime import timedelta
 import itertools
 import logging
@@ -49,9 +50,12 @@ HARDWARE_TYPES = {
 }
 ENABLED = ("IsCpuEnabled", "IsGpuEnabled", "IsMotherboardEnabled", "IsMemoryEnabled", "IsStorageEnabled",
            "IsNetworkEnabled", "IsControllerEnabled", "IsPsuEnabled", "IsBatteryEnabled", "IsPowerMonitorEnabled")
-# 内存条 SPD (内存温度) 逐条走 SMBus 读取, 打开要好几秒; 首次采样后再启用, 让界面先显示其他硬件
+# 内存条 SPD (内存温度) 逐条走 SMBus 读取, 打开要好几秒; 首次采样后在后台线程启用, 界面先显示并照常刷新其他硬件
 DEFERRED = ("IsMemoryEnabled",)
 RETRY = 60  # 初始化失败后的重试间隔 (秒)
+# 退出时会先让出单实例锁, 旧进程可能还在关闭硬件; 打开/关闭硬件都持有这个互斥量, 新进程等它关完再打开驱动
+HARDWARE_MUTEX = "Local\\HardwareMonitorUI_Hardware"
+HARDWARE_WAIT = 10  # 秒; 等不到也继续打开, 最多是驱动并发, 不至于无法启动
 NO_PYTHONNET = "缺少 pythonnet，CPU、显卡等传感器无法读取，点击「安装」自动安装依赖。"
 
 
@@ -156,15 +160,43 @@ def _load(lib_dir):
     return _computer_type
 
 
+def _hold_hardware(wait=HARDWARE_WAIT):
+    """获得硬件互斥量, 返回句柄 (须在同一线程 _release_hardware); 失败或超时返回 None。"""
+    k32 = ctypes.WinDLL("kernel32", use_last_error=True)
+    k32.CreateMutexW.restype = ctypes.c_void_p
+    k32.CreateMutexW.argtypes = [ctypes.c_void_p, ctypes.c_int, ctypes.c_wchar_p]
+    k32.WaitForSingleObject.argtypes = [ctypes.c_void_p, ctypes.c_uint32]
+    k32.WaitForSingleObject.restype = ctypes.c_uint32
+    k32.CloseHandle.argtypes = [ctypes.c_void_p]
+    handle = k32.CreateMutexW(None, False, HARDWARE_MUTEX)
+    if not handle:
+        return None
+    if k32.WaitForSingleObject(handle, int(wait * 1000)) in (0, 0x80):  # WAIT_OBJECT_0 / WAIT_ABANDONED
+        return handle
+    log.warning("Previous instance is still closing hardware; opening anyway")
+    k32.CloseHandle(handle)
+    return None
+
+
+def _release_hardware(handle):
+    if handle:
+        k32 = ctypes.WinDLL("kernel32", use_last_error=True)
+        k32.ReleaseMutex.argtypes = k32.CloseHandle.argtypes = [ctypes.c_void_p]
+        k32.ReleaseMutex(handle)
+        k32.CloseHandle(handle)
+
+
 class Sensors:
     """持有 LibreHardwareMonitor 的 Computer 对象。sample/close 只能在采集线程调用。"""
 
     def __init__(self, lib_dir=None):
         self.lib_dir = Path(lib_dir or paths.LHM_DIR)
         self.computer = None
+        self.hardware_lock = None  # 硬件互斥量句柄, computer 打开期间持有
         self.failed_at = None
         self.error = None
         self.deferred = False  # DEFERRED 里的硬件是否还没启用
+        self.deferred_thread = None
         self.last_tree = None  # 最近一次成功采样, 供网页服务发布
         self.reopen = threading.Event()
 
@@ -181,29 +213,42 @@ class Sensors:
             computer = _load(self.lib_dir)()
             for name in ENABLED:
                 setattr(computer, name, name not in DEFERRED)
+            self.hardware_lock = _hold_hardware()
             started = time.monotonic()
             computer.Open()
             log.info("Hardware sensors opened in %.1f s", time.monotonic() - started)
         except Unavailable as e:
+            self._unlock()
             self.failed_at, self.error = time.monotonic(), str(e)
             raise
         except Exception as e:
+            self._unlock()
             log.exception("Cannot open hardware sensors")
             self.failed_at, self.error = time.monotonic(), f"硬件传感器初始化失败：{e}"
             raise Unavailable(self.error) from e
         self.computer, self.failed_at, self.error = computer, None, None
         self.deferred = True
 
-    def _enable_deferred(self):
+    def _start_deferred(self):
+        """在后台线程启用 DEFERRED 硬件, 采集线程不必停下几秒等它。
+
+        LibreHardwareMonitorLib 增删硬件、读取硬件列表和访问 SMBus 都有内部锁, 可以与 Update() 并行;
+        close() 会先等这个线程结束再关闭硬件。
+        """
+        self.deferred = False
+        self.deferred_thread = threading.Thread(target=self._enable_deferred, args=(self.computer,),
+                                                name="deferred-hardware", daemon=True)
+        self.deferred_thread.start()
+
+    def _enable_deferred(self, computer):
         """Open() 之后再置 True, LibreHardwareMonitorLib 会即时加入对应硬件。
 
         pythonnet 给属性赋值时不释放 GIL, 这几秒里界面线程也会卡住; 方法调用会释放, 所以经反射 SetValue 设置。
         """
-        self.deferred = False
         started = time.monotonic()
         for name in DEFERRED:
             try:
-                self.computer.GetType().GetProperty(name).SetValue(self.computer, True)
+                computer.GetType().GetProperty(name).SetValue(computer, True)
             except Exception:  # 失败只是少了这类硬件, 不影响其他传感器
                 log.exception("Cannot enable %s", name)
         log.info("Deferred hardware opened in %.1f s", time.monotonic() - started)
@@ -220,7 +265,7 @@ class Sensors:
                 raise Unavailable(self.error)
             self._open()
         elif self.deferred:
-            self._enable_deferred()
+            self._start_deferred()
 
         def update(hw):
             try:
@@ -236,9 +281,17 @@ class Sensors:
         return self.last_tree
 
     def close(self):
+        thread, self.deferred_thread = self.deferred_thread, None
+        if thread is not None:
+            thread.join(timeout=15)  # 还在加入内存条时不能关闭硬件
         computer, self.computer = self.computer, None
         if computer is not None:
             try:
                 computer.Close()
             except Exception:
                 log.exception("Cannot close hardware sensors")
+        self._unlock()
+
+    def _unlock(self):
+        lock, self.hardware_lock = self.hardware_lock, None
+        _release_hardware(lock)

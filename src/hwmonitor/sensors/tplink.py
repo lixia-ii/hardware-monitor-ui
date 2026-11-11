@@ -186,9 +186,12 @@ class Router:
                     self.blocked = "请重新输入密码"
                     return empty_reading(self.blocked)
                 result = self._post(url, "/", {"method": "do", "login": {"password": encode_password(password)}}, timeout)
-                if result["error_code"] != 0:
+                if result["error_code"] in _AUTH:
+                    # 只有密码错误/账号锁定才停止重试, 免得反复登录触发锁定; 其他错误按普通失败退避重试
                     self.blocked = "登录失败，请重新输入密码后连接"
                     return empty_reading(self.blocked)
+                if result["error_code"] != 0:
+                    raise ValueError("Login unavailable")
                 token = result.get("stok")
                 if not isinstance(token, str) or not token or len(token) > 256:
                     raise ValueError("Missing session")

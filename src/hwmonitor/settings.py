@@ -77,7 +77,9 @@ def validate(raw):
     if raw.get("close_action") in ("ask", "tray", "exit"):
         out["close_action"] = raw["close_action"]
     if isinstance(raw.get("collapsed"), list):
-        out["collapsed"] = [x for x in raw["collapsed"] if isinstance(x, str)]
+        # 旧版首台设备卡片的收起键是 "router", 现统一为 "router:<设备 ID>"
+        out["collapsed"] = list(dict.fromkeys("router:primary" if x == "router" else x
+                                              for x in raw["collapsed"] if isinstance(x, str)))
     out["interval"] = number(raw.get("interval"), 1, 0.5, 30)
     gpu = raw.get("gpu_id")
     out["gpu_id"] = gpu if isinstance(gpu, str) and gpu else None

@@ -107,6 +107,10 @@ class SettingsTests(unittest.TestCase):
         self.assertEqual(cfg["router"], {"enabled": True, "url": "http://10.0.0.1:9100/metrics", "nic": None})
         self.assertEqual(settings.validate({"routers": [remote_pc]})["router"], settings.DEFAULT_ROUTER)
 
+    def test_legacy_router_collapse_key_migrates_to_device_id(self):
+        cfg = settings.validate({"collapsed": ["router", "case", "router:primary", 3]})
+        self.assertEqual(cfg["collapsed"], ["router:primary", "case"])
+
     def test_new_device_name_reuses_free_number(self):
         self.assertEqual(settings.new_device_name([]), "设备 1")
         self.assertEqual(settings.new_device_name([{"name": "设备 1"}, {"name": "设备 3"}]), "设备 2")

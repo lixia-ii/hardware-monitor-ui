@@ -489,8 +489,9 @@ with patch("hwmonitor.sensors.remote.Device.read", side_effect=lambda *args, **k
             router = dict(openwrt.empty_reading(), offline=False, nic="eth0", nics=["eth0"], temp=39, cpu_load=12,
                           mem_used=4e8, mem_total=1.8e9, mem_load=22, load1=.39, up=2048, down_rate=3e6, uptime=465253)
             app.render(dict(app.data, router=router, routers=[dict(router, id="primary", name="主路由")]))
-            assert app.router_box.master.winfo_manager() == "pack"
-            assert app.router_vals["uptime"].cget("text") == "5天9小时14分"
+            router_box, (_, _, router_vals) = app.router_widgets["primary"]
+            assert router_box.master.winfo_manager() == "pack"
+            assert router_vals["uptime"].cget("text") == "5天9小时14分"
             # The window size belongs to the user: content changes never resize it.
             # Cards scroll under a fixed toolbar; the overlay scrollbar never changes card width.
             app.root.update()
@@ -504,28 +505,28 @@ with patch("hwmonitor.sensors.remote.Device.read", side_effect=lambda *args, **k
                 app.root.update()
                 assert app.root.winfo_height() == tall, "Window height is capped"
                 assert not app.main_scrollbar.winfo_ismapped(), "Scrollbar shown although content fits"
-            card_width = app.router_box.master.winfo_width()
+            card_width = router_box.master.winfo_width()
             for height in (minimum, minimum + app.root.winfo_pixels("80p")):
                 app.root.geometry(f"{width}x{height}")
                 app.root.update()
                 assert app.main_scrollbar.winfo_ismapped(), "Expanded router should overflow a short window"
-                assert app.router_box.master.winfo_width() == card_width, "Scrollbar changed card width"
+                assert router_box.master.winfo_width() == card_width, "Scrollbar changed card width"
                 assert app.btn_bar.winfo_ismapped() and app.btn_bar.winfo_rooty() + app.btn_bar.winfo_height() <= app.root.winfo_rooty() + app.root.winfo_height(), "Toolbar not pinned inside the window"
-                card_height = app.router_box.master.winfo_height()
+                card_height = router_box.master.winfo_height()
                 app.main_canvas.yview_moveto(0)
                 app.values["cpu_temp"].event_generate("<MouseWheel>", delta=-120)
                 app.root.update()
                 assert app.main_canvas.yview()[0] > 0, "Wheel over a label did not scroll"
-                app.router_box.toggle()
+                router_box.toggle()
                 app.root.update()
-                assert not app.router_box.winfo_manager() and "router" in app.settings["collapsed"]
-                assert app.router_box.master.winfo_height() < card_height
+                assert not router_box.winfo_manager() and "router:primary" in app.settings["collapsed"]
+                assert router_box.master.winfo_height() < card_height
                 assert app.root.winfo_height() == height, "Collapse resized the window"
                 assert device_row.winfo_height() == device_height, "Collapse stretched device cards"
                 assert app.root.minsize()[1] == minimum, "Expanded content changed minimum height"
-                app.router_box.toggle()
+                router_box.toggle()
                 app.root.update()
-                assert app.router_box.winfo_manager() == "pack" and "router" not in app.settings["collapsed"]
+                assert router_box.winfo_manager() == "pack" and "router:primary" not in app.settings["collapsed"]
                 assert app.root.winfo_height() == height
                 assert device_row.winfo_height() == device_height
             # A collapsed group keeps its key reading in the header.
@@ -538,14 +539,14 @@ with patch("hwmonitor.sensors.remote.Device.read", side_effect=lambda *args, **k
             app._save_geometry()
             assert app.settings["window"]["height"] == app.root.winfo_height()
             app.render(dict(app.data, routers=[dict(openwrt.empty_reading(), id="primary", name="主路由")]))
-            assert app.router_state.cget("text") == "未连接"
+            assert app.router_widgets["primary"][1][0].cget("text") == "未连接"
             app.render(dict(app.data, router=None, routers=[]))
             assert not app.router_group.winfo_manager()
             # Multiple routers render independent values and offline state; removed devices disappear.
             primary = dict(router, id="primary", name="主路由")
             second = dict(openwrt.empty_reading(), id="second", name="旁路由")
             app.render(dict(app.data, routers=[primary, second]))
-            assert app.router_vals["temp"].cget("text") == "39 °C"
+            assert app.router_widgets["primary"][1][2]["temp"].cget("text") == "39 °C"
             first_box, first_widgets = app.router_widgets["primary"]
             second_box, second_widgets = app.router_widgets["second"]
             app.root.update_idletasks()
@@ -557,7 +558,7 @@ with patch("hwmonitor.sensors.remote.Device.read", side_effect=lambda *args, **k
             assert not first_box.winfo_manager() and second_box.winfo_manager() == "pack"
             second_box.toggle()
             assert not second_box.winfo_manager()
-            assert "router" in app.settings["collapsed"] and "router:second" in app.settings["collapsed"]
+            assert "router:primary" in app.settings["collapsed"] and "router:second" in app.settings["collapsed"]
             first_box.toggle()
             assert first_box.winfo_manager() == "pack" and not second_box.winfo_manager()
             # Reordering and removing the first device keep the second device's fold state.
@@ -566,13 +567,13 @@ with patch("hwmonitor.sensors.remote.Device.read", side_effect=lambda *args, **k
             assert not second_box.winfo_manager()
             app.render(dict(app.data, routers=[second]))
             assert set(app.router_widgets) == {"second"}
-            assert app.router_box is second_box and not second_box.winfo_manager()
-            assert app.router_state.cget("text") == "未连接"
+            assert app.router_widgets["second"][0] is second_box and not second_box.winfo_manager()
+            assert app.router_widgets["second"][1][0].cget("text") == "未连接"
             app.render(dict(app.data, routers=[]))
             assert not app.router_widgets
             app.render(dict(app.data, routers=[second]))
-            assert not app.router_box.winfo_manager(), "Recreating a router card lost fold state"
-            app.router_box.toggle()
+            assert not app.router_widgets["second"][0].winfo_manager(), "Recreating a router card lost fold state"
+            app.router_widgets["second"][0].toggle()
             app.render(dict(app.data, routers=[]))
             # OpenWrt and remote software have independent cards and sensor values.
             pc = dict(remote.empty_reading(), id="pc", name="书房电脑", type="hwmonitor", offline=False,

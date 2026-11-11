@@ -80,6 +80,15 @@ class TPLinkTests(unittest.TestCase):
             self.read("newly-encrypted")
             self.assertEqual(post.call_count, 2)
 
+    def test_other_login_errors_back_off_and_retry(self):
+        with patch.object(self.router, "_post", side_effect=[{"error_code": -1}, {"error_code": 0, "stok": "ok"}, WAN,
+                                                             {"error_code": 0, "hosts_info": {"online_host": []}}]) as post:
+            self.assertIn("连接失败", self.read()["status"])
+            self.assertIsNone(self.router.blocked)
+            self.now.return_value = 10000
+            self.assertFalse(self.read()["offline"])
+            self.assertEqual(post.call_count, 4)
+
     def test_expired_session_reauthenticates_after_delay(self):
         with patch.object(self.router, "_post", side_effect=[
                 {"error_code": 0, "stok": "old"}, {"error_code": -40403},

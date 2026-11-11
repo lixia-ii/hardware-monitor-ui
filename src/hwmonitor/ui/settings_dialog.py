@@ -401,13 +401,15 @@ class SettingsDialogMixin:
         refresh()
 
     def _save_routers(self, items):
+        # 与磁盘上读回的格式保持一致 (补全 type 等字段、规范地址), 采集线程和界面拿到的都是校验后的配置
+        items = settings.validate({"routers": items})["routers"]
         active_keys = {"router-settings:" + item["id"] for item in items}
         self.settings["collapsed"] = [key for key in self.settings["collapsed"]
                                       if not key.startswith("router-settings:") or key in active_keys]
         # 已删除设备的主界面收起状态、显示偏好和远程指标偏好一并清理, 不在配置里残留。
         removed = {item["id"] for item in self.settings["routers"]} - {item["id"] for item in items}
         if removed:
-            stale = {"router:" + ident for ident in removed} | ({"router"} if "primary" in removed else set())
+            stale = {"router:" + ident for ident in removed}
             prefixes = tuple("sensor:device:" + ident + ":" for ident in removed)
             self.settings["collapsed"] = [key for key in self.settings["collapsed"] if key not in stale]
             display = self.settings["display"]

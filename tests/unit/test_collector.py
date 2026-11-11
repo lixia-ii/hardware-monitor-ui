@@ -1,12 +1,14 @@
 """采集线程: 退避、历史写入失败与路由器隔离。"""
+from concurrent.futures import ThreadPoolExecutor
 import sqlite3
+import threading
 import time
 import unittest
 from unittest.mock import patch
 
 from hwmonitor import settings
 from hwmonitor.core.collector import Collector
-from hwmonitor.sensors import openwrt
+from hwmonitor.sensors import openwrt, remote
 
 
 class CollectorTests(unittest.TestCase):
@@ -50,25 +52,64 @@ class CollectorTests(unittest.TestCase):
         self.assertIsNone(data["cpu_temp"])
         self.assertTrue(data["error"])
 
-    def test_router_survives_sensor_failure_and_counts_in_collection_time(self):
+    def run_ticks(self, worker, ticks, **read):
+        """运行 ticks 次采样; 两次之间稍停, 让线程池里的设备读取完成。返回每次送出的结果。"""
+        results, waits = [], []
+        def wait(_):
+            results.append(worker.results.get_nowait())
+            waits.append(1)
+            if len(waits) >= ticks:
+                worker.stop()
+            else:
+                time.sleep(.2)
+        with patch("hwmonitor.core.collector.HistoryStore") as store, patch("hwmonitor.core.collector.reading.read", **read), patch.object(worker.wake, "wait", side_effect=wait):
+            store.return_value.load.return_value = []
+            worker.start()
+            worker.join(timeout=5)
+        return results
+
+    def test_slow_router_never_delays_local_sampling(self):
         worker = Collector(settings.validate({"router": {"enabled": True}}))
         reading = dict(openwrt.empty_reading(), offline=False)
+        started = threading.Event()
         def slow_router(*_):
-            time.sleep(.05)
+            started.set()
+            time.sleep(.3)  # 比两次采样的间隔还长
             return reading
-        with patch("hwmonitor.core.collector.HistoryStore") as store, patch("hwmonitor.core.collector.reading.read", return_value={"sensors_down": False}), patch.object(worker.router, "read", side_effect=slow_router), patch.object(worker.wake, "wait", side_effect=lambda _: worker.stop()):
-            store.return_value.load.return_value = []
-            worker.start()
-            worker.join(timeout=3)
-        self.assertGreaterEqual(worker.results.get_nowait()["collection_ms"], 40)
+        with patch.object(worker.router, "read", side_effect=slow_router) as read:
+            first, second, third = self.run_ticks(worker, 3, side_effect=lambda *_: {"sensors_down": False})
+        self.assertTrue(started.is_set())
+        self.assertLess(first["collection_ms"], 100)
+        self.assertEqual(first["routers"], [])  # 还没读到的设备暂不列出, 本机数据照常送出
+        self.assertEqual(second["routers"], [])
+        self.assertEqual(read.call_count, 2)  # 进行中的读取不重复提交
+        self.assertEqual(third["routers"][0]["id"], "primary")
+
+    def test_router_survives_sensor_failure(self):
         worker = Collector(settings.validate({"router": {"enabled": True}}))
-        with patch("hwmonitor.core.collector.HistoryStore") as store, patch("hwmonitor.core.collector.reading.read", side_effect=RuntimeError("failure")), patch.object(worker.router, "read", return_value=reading), patch.object(worker.wake, "wait", side_effect=lambda _: worker.stop()), self.assertLogs("hwmonitor.core.collector", "ERROR"):
-            store.return_value.load.return_value = []
-            worker.start()
-            worker.join(timeout=3)
-        result = worker.results.get_nowait()
+        reading = dict(openwrt.empty_reading(), offline=False)
+        with patch.object(worker.router, "read", return_value=reading), self.assertLogs("hwmonitor.core.collector", "ERROR"):
+            result = self.run_ticks(worker, 2, side_effect=RuntimeError("failure"))[-1]
+        self.assertTrue(result["error"])
         self.assertEqual({k: result["router"][k] for k in reading}, reading)
         self.assertEqual(result["routers"][0]["id"], "primary")
+
+    def test_poll_drops_results_of_replaced_device(self):
+        cfg = settings.validate({"routers": [{"id": "a", "name": "旧名", "enabled": True}]})
+        worker = Collector(cfg)
+        with ThreadPoolExecutor(max_workers=1) as pool, patch("hwmonitor.sensors.openwrt.Router.read",
+                                                              return_value=dict(openwrt.empty_reading(), offline=False)):
+            worker.router_pool = pool
+            worker._poll_routers(cfg)
+            worker.device_reads["a"].result(timeout=2)
+            cfg["routers"][0]["name"] = "新名"
+            self.assertEqual([r["name"] for r in worker._poll_routers(cfg)], ["新名"])
+            worker.device_reads["a"].result(timeout=2)
+            cfg["routers"][0]["type"] = "hwmonitor"
+            with patch("hwmonitor.sensors.remote.Device.read", side_effect=lambda *_: time.sleep(.2) or remote.empty_reading()):
+                self.assertEqual(worker._poll_routers(cfg), [])  # 改类型后不显示旧类型的结果
+                worker.device_reads["a"].result(timeout=2)
+                self.assertEqual(worker._poll_routers(cfg)[0]["type"], "hwmonitor")
 
     def test_multiple_routers_keep_state_and_isolate_failures(self):
         cfg = settings.validate({"routers": [

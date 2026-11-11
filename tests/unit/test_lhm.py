@@ -1,6 +1,7 @@
 """LibreHardwareMonitorLib 封装: data.json 结构、数值格式、初始化重试。"""
 import json
 from pathlib import Path
+import threading
 import time
 import unittest
 from unittest.mock import Mock, patch
@@ -12,6 +13,12 @@ from tests.support import fake_hardware, fake_sensor
 
 
 class HardwareTests(unittest.TestCase):
+    def setUp(self):
+        # 不碰真实的硬件互斥量: 本机正在运行的实例会持有它, 测试会等满超时
+        mutex = patch.object(lhm, "HARDWARE_MUTEX", "Local\\HardwareMonitorUI_Test_%d" % time.monotonic_ns())
+        mutex.start()
+        self.addCleanup(mutex.stop)
+
     def machine(self):
         board = fake_hardware("Motherboard", "Board", "/motherboard", sub=[
             fake_hardware("SuperIO", "Nuvoton", "/lpc/nct6798d/0", [
@@ -98,6 +105,7 @@ class HardwareTests(unittest.TestCase):
             self.assertEqual({name for name in lhm.ENABLED if getattr(computer, name) is not True}, set(lhm.DEFERRED))
             computer.GetType.return_value.GetProperty.return_value.SetValue.assert_not_called()
             source.sample()
+            source.deferred_thread.join(timeout=2)  # 内存条在后台线程启用, 不阻塞这次采样
             computer.GetType.return_value.GetProperty.assert_called_with("IsMemoryEnabled")
             computer.GetType.return_value.GetProperty.return_value.SetValue.assert_called_once_with(computer, True)
             source.request_reopen()
@@ -106,6 +114,43 @@ class HardwareTests(unittest.TestCase):
         self.assertEqual(computer.Open.call_count, 2)
         source.close()
         self.assertIsNone(source.computer)
+
+    def test_deferred_hardware_opens_without_blocking_samples(self):
+        computer = Mock(Hardware=self.machine())
+        opening = threading.Event()
+        def slow_enable(*_):
+            opening.set()
+            time.sleep(.5)  # 模拟内存条 SPD 要读好几秒
+        computer.GetType.return_value.GetProperty.return_value.SetValue.side_effect = slow_enable
+        source = lhm.Sensors(Path("missing"))
+        with patch("hwmonitor.sensors.lhm._load", return_value=Mock(return_value=computer)):
+            source.sample()
+            started = time.monotonic()
+            source.sample()
+            source.sample()
+            self.assertLess(time.monotonic() - started, .3)
+            self.assertTrue(opening.wait(1))
+            source.close()  # 关闭前等后台线程加完内存条
+        self.assertIsNone(source.deferred_thread)
+        computer.Close.assert_called_once()
+        self.assertEqual(computer.GetType.return_value.GetProperty.return_value.SetValue.call_count, 1)
+
+    def test_hardware_mutex_waits_for_previous_owner(self):
+        source = lhm.Sensors(Path("missing"))
+        with patch("hwmonitor.sensors.lhm._load", return_value=Mock(return_value=Mock(Hardware=[]))):
+            source.sample()
+        self.assertIsNotNone(source.hardware_lock)
+        other = []  # 互斥量归线程所有, 另一线程模拟新实例
+        thread = threading.Thread(target=lambda: other.append(lhm._hold_hardware(0.05)))
+        thread.start()
+        thread.join()
+        self.assertEqual(other, [None])
+        source.close()
+        self.assertIsNone(source.hardware_lock)
+        thread = threading.Thread(target=lambda: other.append(lhm._hold_hardware(0.05)) or lhm._release_hardware(other[-1]))
+        thread.start()
+        thread.join()
+        self.assertIsNotNone(other[-1])
 
     def test_one_device_update_error_does_not_stop_sampling(self):
         machine = self.machine()
@@ -129,18 +174,3 @@ class HardwareTests(unittest.TestCase):
         source.close.assert_called_once()
         worker.reload_hardware()
         source.request_reopen.assert_called_once()
-
-    def test_first_local_reading_is_published_before_devices(self):
-        worker = Collector(settings.validate({"history_enabled": False}), Mock(ready=True))
-        queued = []
-        def read_routers(_):
-            queued.append(worker.results.get_nowait())  # 读设备 (可能要等超时) 之前, 本机数据已送出
-            return [{"id": "primary"}]
-        with patch("hwmonitor.core.collector.HistoryStore") as store, patch("hwmonitor.core.collector.reading.read", return_value={"sensors_down": False}), patch.object(worker, "_read_routers", side_effect=read_routers), patch.object(worker.wake, "wait", side_effect=lambda _: worker.stop()):
-            store.return_value.load.return_value = []
-            worker.start()
-            worker.join(timeout=3)
-        self.assertEqual(len(queued), 1)
-        self.assertEqual((queued[0]["routers"], queued[0]["router"]), ([], None))
-        self.assertIn("selection", queued[0])
-        self.assertEqual(worker.results.get_nowait()["routers"], [{"id": "primary"}])

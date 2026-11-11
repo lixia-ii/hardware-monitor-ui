@@ -16,9 +16,11 @@ class DevicePresence:
         if self.identity != identity:
             self.identity = identity
             self.reset()
-        if not config.get("notify_clients", True) or reading.get("offline") or reading.get("terminals") is None:
+        if not config.get("notify_clients", True) or reading.get("offline"):
             self.reset()
             return []
+        if reading.get("terminals") is None:
+            return []  # 路由器在线、仅终端表暂时读不到: 保留基线, 恢复后照常比较
         now = reading.get("terminals_sample_time")
         if now is None or now == self.sample_time:
             return []

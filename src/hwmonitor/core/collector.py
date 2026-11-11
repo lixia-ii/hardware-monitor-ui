@@ -1,4 +1,7 @@
-"""Long-lived hardware sampling thread and bounded router worker pool; no Tk calls."""
+"""Long-lived hardware sampling thread and bounded router worker pool; no Tk calls.
+
+设备 (路由器/远程电脑) 在线程池里各自读取, 采集循环只提交和取最近一次结果, 本机采样从不等网络。
+"""
 from concurrent.futures import ThreadPoolExecutor
 import copy
 import logging
@@ -34,6 +37,9 @@ class Collector(threading.Thread):
         self.router_pool = None
         self.device_events = queue.SimpleQueue()
         self.presence = {}
+        self.device_reads = {}  # 设备 ID -> 进行中的读取 (Future), 每台设备同时只读一次
+        self.device_lock = threading.Lock()
+        self.device_latest = {}  # 设备 ID -> (读取对象, 最近一次结果); 由线程池回调写入
 
     def configure(self, settings):
         with self.lock:
@@ -70,12 +76,16 @@ class Collector(threading.Thread):
             return (tplink.empty_reading() if options.get("type") == "tplink" else
                     remote.empty_reading() if options.get("type") == "hwmonitor" else openwrt.empty_reading())
 
-    def _read_routers(self, options):
+    def _sync_devices(self, options):
+        """按配置增删、替换各设备的读取对象, 返回启用的设备配置。"""
         active = [cfg for cfg in options["routers"] if cfg["enabled"]]
         ids = {cfg["id"] for cfg in active}
         self.routers = {key: value for key, value in self.routers.items() if key in ids}
         self.device_types = {key: value for key, value in self.device_types.items() if key in ids}
         self.presence = {key: value for key, value in self.presence.items() if key in ids}
+        self.device_reads = {key: value for key, value in self.device_reads.items() if key in ids}
+        with self.device_lock:
+            self.device_latest = {key: value for key, value in self.device_latest.items() if key in ids}
         for cfg in active:
             kind = cfg.get("type", "openwrt")
             if cfg["id"] not in self.routers or self.device_types.get(cfg["id"]) != kind:
@@ -86,21 +96,58 @@ class Collector(threading.Thread):
                 self.presence.setdefault(cfg["id"], DevicePresence())
             else:
                 self.presence.pop(cfg["id"], None)
+        return active
 
+    def _read_one(self, cfg, device, presence):
+        result = self._read_router(cfg, device)
+        if presence is not None:
+            for event in presence.update(cfg, result):
+                self.device_events.put(event)
+        return dict(result, id=cfg["id"], name=cfg["name"], type=cfg.get("type", "openwrt"))
+
+    def _read_routers(self, options):
+        """同步读取全部启用的设备并等待结果 (单次读取/测试用); 采集循环用不阻塞的 _poll_routers。"""
+        active = self._sync_devices(options)
         def read_one(cfg):
-            result = self._read_router(cfg, self.routers[cfg["id"]])
-            if cfg["id"] in self.presence:
-                for event in self.presence[cfg["id"]].update(cfg, result):
-                    self.device_events.put(event)
-            return dict(result, id=cfg["id"], name=cfg["name"], type=cfg.get("type", "openwrt"))
-
+            return self._read_one(cfg, self.routers[cfg["id"]], self.presence.get(cfg["id"]))
         return list(self.router_pool.map(read_one, active)) if self.router_pool else [read_one(cfg) for cfg in active]
+
+    def _poll_routers(self, options):
+        """不阻塞: 给空闲的设备提交一次后台读取, 返回各设备最近一次的结果。
+
+        还没读到过的设备暂不列出 (卡片在有数据后出现); 上一次还没读完的设备不重复提交, 慢设备不拖累其他设备。
+        """
+        active = self._sync_devices(options)
+        for cfg in active:
+            ident = cfg["id"]
+            pending = self.device_reads.get(ident)
+            if pending is not None and not pending.done():
+                continue
+            device = self.routers[ident]
+            future = self.router_pool.submit(self._read_one, cfg, device, self.presence.get(ident))
+            self.device_reads[ident] = future
+            future.add_done_callback(lambda f, ident=ident, device=device: self._store_device(ident, device, f))
+        with self.device_lock:
+            latest = dict(self.device_latest)
+        # 只采用当前读取对象的结果: 改类型后旧对象晚到的结果不再显示; 名称以当前配置为准
+        return [dict(latest[cfg["id"]][1], name=cfg["name"]) for cfg in active
+                if cfg["id"] in latest and latest[cfg["id"]][0] is self.routers[cfg["id"]]]
+
+    def _store_device(self, ident, device, future):
+        if future.cancelled():
+            return
+        try:
+            result = future.result()
+        except Exception:  # _read_router 已兜底, 这里只防意外
+            log.exception("Device sampling failed")
+            return
+        with self.device_lock:
+            self.device_latest[ident] = (device, result)
 
     def run(self):
         store = None
         last_sample = -float("inf")
         failures = 0
-        first = True
         try:
             self.router_pool = ThreadPoolExecutor(max_workers=4, thread_name_prefix="router")
             try:
@@ -126,11 +173,7 @@ class Collector(threading.Thread):
                     data["selection"] = (options["gpu_id"], options["nic_ids"])
                     if self.web is not None:
                         self.web.publish(self.source.last_tree if self.source is not None else None)
-                    if first:
-                        # 首份本机数据先送出, 启动界面不必等路由器/远程设备 (外网地址可能要等到超时)
-                        first = False
-                        self._put(dict(data, routers=[], router=None, sample_time=time.time()))
-                    data["routers"] = self._read_routers(options)
+                    data["routers"] = self._poll_routers(options)
                     data["router"] = data["routers"][0] if data["routers"] else None
                     data["collection_ms"] = round((time.monotonic() - started) * 1000, 1)
                     data["sample_time"] = time.time()
@@ -153,7 +196,7 @@ class Collector(threading.Thread):
                     data = reading.empty_reading()
                     data.update(error="采集失败，请查看本地日志", sample_time=time.time(),
                                 selection=(options["gpu_id"], options["nic_ids"]))
-                    data["routers"] = self._read_routers(options)
+                    data["routers"] = self._poll_routers(options)
                     data["router"] = data["routers"][0] if data["routers"] else None
                     self._put(data)
                 delay = options["interval"]
@@ -162,7 +205,8 @@ class Collector(threading.Thread):
                 self.wake.wait(max(0, delay - (time.monotonic() - started)))
         finally:
             if self.router_pool:
-                self.router_pool.shutdown(wait=True)
+                # 不等进行中的网络请求 (最长几秒), 先去关闭硬件; 请求结束后线程自行退出
+                self.router_pool.shutdown(wait=False, cancel_futures=True)
             if store:
                 store.close()
             if self.source is not None:

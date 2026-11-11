@@ -14,6 +14,7 @@ WM_WAKE = 0x8000 + 1   # WM_APP + 1: 第二个实例请求唤出窗口
 WM_LBUTTONUP, WM_RBUTTONUP, WM_CONTEXTMENU = 0x0202, 0x0205, 0x007B
 NIM_ADD, NIM_MODIFY, NIM_DELETE = 0, 1, 2
 NIF_MESSAGE, NIF_ICON, NIF_TIP, NIF_INFO = 0x01, 0x02, 0x04, 0x10
+NIIF_INFO = 0x00000001
 NIIF_WARNING = 0x00000002
 MENU_SHOW, MENU_QUIT, MENU_FLOATING, MENU_TOPMOST = 1, 2, 3, 4
 MF_CHECKED, MF_SEPARATOR = 0x08, 0x800
@@ -158,15 +159,15 @@ class Tray:
             self._tip = tip
             self._notify(NIM_MODIFY)
 
-    def notify(self, title, message):
-        """显示 Windows 托盘提醒；托盘不可用时返回 False。"""
+    def notify(self, title, message, warning=True):
+        """显示 Windows 托盘提醒 (warning=False 用信息图标)；托盘不可用时返回 False。"""
         if not self.ok:
             return False
         nid = self._nid()
         nid.uFlags |= NIF_INFO
         nid.szInfoTitle = title[:63]
         nid.szInfo = message[:255]
-        nid.dwInfoFlags = NIIF_WARNING
+        nid.dwInfoFlags = NIIF_WARNING if warning else NIIF_INFO
         return bool(shell32.Shell_NotifyIconW(NIM_MODIFY, ctypes.byref(nid)))
 
     def _wndproc(self, hwnd, msg, wparam, lparam):

@@ -44,12 +44,17 @@ class PresenceTests(unittest.TestCase):
         self.assertEqual(self.update(8, "A"), [])
         self.assertEqual(self.update(12, "A"), [])
 
-    def test_connection_or_table_failure_resets_baseline_silently(self):
-        for failed in (tplink.empty_reading(), dict(tplink.empty_reading(), offline=False)):
-            with self.subTest(failed=failed):
-                self.update(0, "A", "B")
-                self.assertEqual(self.detector.update(CONFIG, failed), [])
-                self.assertEqual(self.update(10, "C"), [])
+    def test_connection_failure_resets_baseline_silently(self):
+        self.update(0, "A", "B")
+        self.assertEqual(self.detector.update(CONFIG, tplink.empty_reading()), [])
+        self.assertEqual(self.update(10, "C"), [])
+
+    def test_host_table_failure_keeps_baseline(self):
+        self.update(0, "A", "B")
+        self.assertEqual(self.detector.update(CONFIG, dict(tplink.empty_reading(), offline=False)), [])
+        self.assertEqual(self.update(10, "A", "B", "C"), [])
+        event = self.update(14, "A", "B", "C")
+        self.assertEqual([(e["name"], e["online"]) for e in event], [("C", True)])
 
     def test_disabled_or_changed_credentials_reset_baseline(self):
         self.update(0, "A")
