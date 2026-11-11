@@ -17,6 +17,9 @@ from hwmonitor.core.alerts import AlertEngine
 from hwmonitor.core.collector import Collector
 from hwmonitor.sensors import lhm, reading
 from hwmonitor.system import autostart, deps, pawnio, tray, webserver
+from hwmonitor.system.management_server import ManagementServer
+from hwmonitor.system.webbridge import Bridge
+from hwmonitor.ui.web_management import WebManagementMixin
 from hwmonitor.ui import theme
 from hwmonitor.ui.customize_dialog import CustomizeDialogMixin
 from hwmonitor.ui.device_cards import DeviceCardsMixin
@@ -40,7 +43,7 @@ def on_screen(x, y):
     return bool(user.MonitorFromPoint(wt.POINT(x, y), 0))  # MONITOR_DEFAULTTONULL
 
 
-class MainWindow(SettingsDialogMixin, CustomizeDialogMixin, HistoryDialogMixin, FloatingWindowMixin,
+class MainWindow(WebManagementMixin, SettingsDialogMixin, CustomizeDialogMixin, HistoryDialogMixin, FloatingWindowMixin,
                  InfoWindowMixin, DeviceCardsMixin, DialogMixin):
     """主窗口: CPU/显卡卡片、可选分组、提示条与底部工具栏; 各对话框和悬浮窗由混入类提供。"""
 
@@ -156,6 +159,9 @@ class MainWindow(SettingsDialogMixin, CustomizeDialogMixin, HistoryDialogMixin, 
         self.alert_engine = AlertEngine()
         # 硬件传感器在进程内读取 (LibreHardwareMonitorLib); 自检不打开硬件
         self.web = webserver.WebServer()
+        self.management = ManagementServer()
+        self.web_bridge = self.management.bridge = Bridge()
+        self._management_firewall = None
         self._firewall = None
         self.collector = Collector(self.settings, None if "--self-test" in sys.argv else lhm.Sensors(), self.web)
         self.collector.start()
@@ -170,6 +176,7 @@ class MainWindow(SettingsDialogMixin, CustomizeDialogMixin, HistoryDialogMixin, 
         if self.settings.get("floating", {}).get("enabled"):
             self.show_floating()
         self._restore_geometry()
+        self._apply_management()
         r.bind("<Configure>", self._schedule_geometry_save, add="+")
         self.tick()
 
@@ -447,6 +454,7 @@ class MainWindow(SettingsDialogMixin, CustomizeDialogMixin, HistoryDialogMixin, 
         self.root.withdraw()
         self.collector.stop()
         def stop():
+            self.management.stop()
             self.web.stop()
             # 端口已空出, 先让出单实例: 新实例不必等下面关闭硬件 (采集线程可能正在打开内存条, 要几秒)
             tray.release_single_instance()
@@ -707,6 +715,7 @@ class MainWindow(SettingsDialogMixin, CustomizeDialogMixin, HistoryDialogMixin, 
         if not self._tray_events():
             return
         self._device_notifications()
+        self.web_bridge.drain(self._web_dispatch)
         while not self.collector.history_rows.empty():
             action, rows = self.collector.history_rows.get()
             if action == "load":

@@ -1,0 +1,42 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+  <meta name="theme-color" content="#0d111b">
+  <meta name="apple-mobile-web-app-capable" content="yes">
+  <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
+  <meta name="description" content="电脑硬件与设备的远程管理中心">
+  <title>硬件监控 · 管理中心</title>
+  <link rel="manifest" href="/manifest.webmanifest">
+  <link rel="icon" href="/icon.svg" type="image/svg+xml">
+  <link rel="apple-touch-icon" href="/icon.png">
+  <link rel="stylesheet" href="/app.css">
+  <script src="/app.js" defer></script>
+</head>
+<body>
+  <div id="app">
+    <aside class="sidebar">
+      <a class="brand" href="#overview"><img src="/icon.svg" alt="" width="36" height="36"><span>硬件监控<small>管理中心</small></span></a>
+      <p class="nav-label">工作空间</p>
+      <nav id="navigation" aria-label="主导航">
+        <a href="#overview" data-page="overview"><span>◫</span>总览</a>
+        <a href="#devices" data-page="devices"><span>▣</span>设备</a>
+        <a href="#history" data-page="history"><span>⌁</span>历史</a>
+        <a href="#settings" data-page="settings"><span>⚙</span>设置</a>
+        <a href="#info" data-page="info"><span>ⓘ</span>信息</a>
+      </nav>
+      <div class="sidebar-foot"><span class="dot"></span> 连接你的 Windows 电脑<br><small id="version"></small></div>
+    </aside>
+    <main>
+      <header class="topbar"><span class="breadcrumb">工作空间 <span>/</span> <b id="page-label">总览</b></span><div class="top-actions"><span id="connection" class="badge">正在连接</span></div></header>
+      <div class="page-head"><div><p class="eyebrow">HARDWARE MONITOR</p><h1 id="page-title">运行总览</h1><p id="page-description" class="muted">掌握电脑与设备的每一刻状态。</p></div><span id="last-update" class="muted"></span></div>
+      <div id="notice" class="notice" role="status" hidden></div>
+      <div id="content"></div>
+      <footer class="page-footer">数据由电脑端采集 · 电脑和软件需保持运行</footer>
+    </main>
+  </div>
+  <div id="toast" role="status" hidden></div>
+  <dialog id="device-dialog"><form id="device-form"><div class="section-title"><h2 id="device-title">设备设置</h2><button type="button" class="quiet" data-action="close-dialog" aria-label="关闭">✕</button></div><div id="device-fields"></div><p id="device-error" class="error" role="alert"></p><div class="form-actions"><button type="button" class="danger" id="delete-device">删除设备</button><button type="submit" class="primary">保存设备</button></div></form></dialog>
+</body>
+</html>

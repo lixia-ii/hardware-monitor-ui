@@ -317,12 +317,39 @@ class SettingsDialogMixin:
             else:
                 self._row_message(url_row, "\n".join(urls) if web["enabled"] else "开启网页服务后可用")
         def save(**changes):
+            if changes.get("port") == self.settings["management"]["port"]:
+                self._row_message(url_row, "内网数据端口必须与手机管理端口不同。", error=True)
+                return
             self._save_option("web", {**self.settings["web"], **changes})
             refresh(self.web.error)
         self._switch(web_row, self.settings["web"]["enabled"], lambda on: save(enabled=on))
         self._switch(lan_row, self.settings["web"]["lan"], lambda on: save(lan=on))
         self._number(port_row, self.settings["web"]["port"], 1024, 65535, "", lambda v: save(port=v))
         refresh(self.web.error)
+        self._management_controls(page)
+
+    def _management_controls(self, page):
+        group = self._group(page, "手机管理端")
+        cfg = self.settings["management"]
+        status_row = self._row(group, "管理地址", "")
+        def refresh(error=None):
+            current = self.settings["management"]
+            urls = [f"http://127.0.0.1:{current['port']}/"]
+            urls += [f"http://{ip}:{current['port']}/" for ip in lan_addresses()]
+            message = "\n".join(urls) if self.management.server else error or "管理端未启动；启用后可通过局域网访问。"
+            self._row_message(status_row, message, error=bool(error))
+        def save(**changes):
+            current = {**self.settings["management"], **changes}
+            if current["port"] == self.settings["web"]["port"]:
+                refresh("管理端口必须与内网数据端口不同。")
+                return
+            self._save_option("management", current)
+            refresh(self.management.error)
+        row = self._row(group, "启用手机管理端", "默认端口 7076，启用后同一局域网的设备可直接访问")
+        self._switch(row, cfg["enabled"], lambda on: save(enabled=on))
+        row = self._row(group, "管理端口", "1024–65535，与内网数据端口独立")
+        self._number(row, cfg["port"], 1024, 65535, "", lambda v: save(port=v))
+        refresh(self.management.error)
 
     def _monitor_page(self, page):
         group = self._group(page, "采集")
@@ -681,6 +708,8 @@ class SettingsDialogMixin:
         self.collector.configure(self.settings)
         if key == "web":
             self._apply_web()
+        elif key == "management":
+            self._apply_management()
 
     def _save_alert(self, key, value):
         self.settings["alerts"][key] = value

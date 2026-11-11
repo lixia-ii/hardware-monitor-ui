@@ -40,6 +40,10 @@ paths / settings: 各层共用的基础模块
 | `system/tray.py` | 托盘图标、气泡通知、单实例互斥量（纯 ctypes） |
 | `system/pawnio.py` | PawnIO 驱动检测与安装 |
 | `system/webserver.py` | 兼容 `/data.json` 的网页服务、局域网防火墙规则、本机地址 |
+| `system/management_server.py` / `webbridge.py` | 独立局域网手机管理服务（默认 7076）：HTTP、固定开放局域网、独立防火墙规则、HTTP 与 Tk 主线程之间的有界 RPC 队列 |
+| `system/web/` | 自包含手机网页、样式、脚本、主屏幕图标与 Web App manifest；不依赖 CDN |
+| `core/management.py` | 对外配置投影、密码隐藏、严格更新校验和版本冲突检测 |
+| `ui/web_management.py` | 在 Tk 主线程读取状态与历史、保存并应用网页设置；硬件概览后台读取 |
 | `ui/main_window.py` | 主窗口：CPU/显卡卡片、可选分组、提示条、底部工具栏、托盘联动、渲染 |
 | `ui/device_cards.py` | 设备卡片（OpenWrt / 远程电脑 / TP-Link）：单行标题、详情、终端流量榜、上下线提醒 |
 | `ui/settings_dialog.py` 等 | 设置、自定义显示、历史曲线、硬件信息、悬浮窗、通用对话框，各为一个混入类 |
@@ -66,6 +70,7 @@ LibreHardwareMonitorLib ─(lhm.Sensors.sample)─> data.json 结构的树 ─�
 
 - 所有 .NET 调用都在采集线程里进行；界面线程只从队列取结果，不直接访问硬件。
 - 采集线程退出时关闭硬件库，释放驱动。
+- 内网数据服务与手机管理服务是两个独立实例，互不提供对方的路由。管理请求通过有界队列由 `MainWindow.tick()` 处理；超时且尚未执行的修改会取消，不会稍后静默应用。网页不能修改管理服务自身的端口和开关。
 - 历史每 5 秒取样一次，写入 SQLite，并通过队列同步给界面的内存历史。
 
 ## 测试

@@ -153,11 +153,15 @@ def segments(rows, key, start, end, width, gpu_id=None, net_selection=None, *, g
     return result
 
 
+def write_csv(f, rows):
+    w = csv.writer(f)
+    w.writerow(("time", "gpu_id", "gpu_name", "net_selection", *METRICS))
+    for t, values in rows:
+        w.writerow((time.strftime("%Y-%m-%d %H:%M:%S", time.localtime(t)),
+                    values.get("gpu_id"), values.get("gpu_name"), values.get("net_selection"),
+                    *(values.get(k) for k in METRICS)))
+
+
 def export_csv(path, rows):
     with open(path, "w", encoding="utf-8-sig", newline="") as f:
-        w = csv.writer(f)
-        w.writerow(("time", "gpu_id", "gpu_name", "net_selection", *METRICS))
-        for t, values in rows:
-            w.writerow((time.strftime("%Y-%m-%d %H:%M:%S", time.localtime(t)),
-                        values.get("gpu_id"), values.get("gpu_name"), values.get("net_selection"),
-                        *(values.get(k) for k in METRICS)))
+        write_csv(f, rows)

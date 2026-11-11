@@ -19,12 +19,14 @@ DEFAULT_ROUTER = {"enabled": False, "url": "http://192.168.1.1:9100/metrics", "n
 DEFAULT_REMOTE = {"enabled": False, "url": "http://192.168.1.2:8085/data.json", "nic": None, "type": "hwmonitor"}
 DEFAULT_TPLINK = {"enabled": False, "url": "http://192.168.0.1", "nic": None,
                   "type": "tplink", "password_protected": "", "notify_clients": True}
+DEFAULT_MANAGEMENT = {"enabled": False, "port": 7076}
 DEFAULTS = {"close_action": "ask", "topmost": False, "collapsed": [], "floating": DEFAULT_FLOATING,
             "alerts": DEFAULT_ALERTS, "interval": 1.0, "gpu_id": None, "nic_ids": None,
             "display": {}, "history_enabled": True,
             "router": DEFAULT_ROUTER,
             "routers": [{**DEFAULT_ROUTER, "id": "primary", "name": "路由器 1"}],
             "web": {"enabled": False, "lan": False, "port": 8085},
+            "management": DEFAULT_MANAGEMENT,
             "window": None}
 
 
@@ -137,6 +139,10 @@ def validate(raw):
         out["web"] = {"enabled": web.get("enabled") is True, "lan": web.get("lan") is True,
                       "port": int(number(web.get("port"), 8085, 1024, 65535))}
     f = raw.get("floating")
+    management = raw.get("management")
+    if isinstance(management, dict):
+        out["management"] = {"enabled": management.get("enabled") is True,
+                             "port": int(number(management.get("port"), 7076, 1024, 65535))}
     if isinstance(f, dict):
         out["floating"] = {"enabled": f.get("enabled") is True,
                            "x": int(number(f.get("x"), 40, -100000, 100000)),

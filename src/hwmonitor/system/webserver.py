@@ -27,19 +27,23 @@ def lan_addresses():
     return list(dict.fromkeys(ip for ip in found if not ip.startswith(("127.", "169.254."))))
 
 
-def firewall(port=None):
+_firewall_lock = threading.Lock()
+
+
+def firewall(port=None, rule=RULE):
     """port 为 None 时删除放行规则, 否则只对本地子网放行本程序的该端口 (需要管理员)。"""
     run = dict(capture_output=True, timeout=10, creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0))
-    try:
-        subprocess.run(["netsh", "advfirewall", "firewall", "delete", "rule", f"name={RULE}"], **run)
-        if port is not None:
-            # 按程序放行, Windows 才不会再弹"是否允许访问网络"; remoteip=localsubnet 限定局域网
-            subprocess.run(["netsh", "advfirewall", "firewall", "add", "rule", f"name={RULE}", "dir=in",
-                            "action=allow", "protocol=TCP", f"localport={port}", f"program={sys.executable}",
-                            "remoteip=localsubnet", "profile=any"], check=True, **run)
-    except (OSError, subprocess.SubprocessError):
-        log.exception("Cannot update firewall rule")
-        return False
+    with _firewall_lock:  # 数据服务和管理端的规则可能同时更新, netsh 串行执行
+        try:
+            subprocess.run(["netsh", "advfirewall", "firewall", "delete", "rule", f"name={rule}"], **run)
+            if port is not None:
+                # 按程序放行, Windows 才不会再弹"是否允许访问网络"; remoteip=localsubnet 限定局域网
+                subprocess.run(["netsh", "advfirewall", "firewall", "add", "rule", f"name={rule}", "dir=in",
+                                "action=allow", "protocol=TCP", f"localport={port}", f"program={sys.executable}",
+                                "remoteip=localsubnet", "profile=any"], check=True, **run)
+        except (OSError, subprocess.SubprocessError):
+            log.exception("Cannot update firewall rule %s", rule)
+            return False
     return True
 
 

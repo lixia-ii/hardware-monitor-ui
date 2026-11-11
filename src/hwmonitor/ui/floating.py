@@ -426,21 +426,35 @@ class FloatingWindow(tk.Toplevel):
 
     def _toggle(self, key):
         self.options[key] = self._vars[key].get()
+        self._apply(key)
+        self.on_save()
+
+    def _apply(self, key):
         if key == "topmost":
             if not self.hidden:  # 缩进时细边始终置顶, 滑出来再生效
                 self.attributes("-topmost", self.options["topmost"])
         elif key == "autohide":
             if not self.options["autohide"]:
                 self.reveal()
+        elif key == "opacity":
+            if not self.sliding:  # 滑动中的渐变结束时自己会用到新值
+                _set_alpha(self, self.options["opacity"])
         else:
             self._layout()
             if not self.hidden:
                 self._settle(*self.pos, save=False)  # 高度变了, 贴底边时重新收回屏幕内
-        self.on_save()
+
+    def apply_options(self, before):
+        """选项在别处 (手机管理端) 被修改后, 按右键菜单相同的方式让已打开的窗口立即生效。"""
+        for key in ("topmost", "autohide", "opacity", "show_mem", "show_net"):
+            if self.options.get(key) != before.get(key):
+                if key in getattr(self, "_vars", {}):
+                    self._vars[key].set(self.options[key])
+                self._apply(key)
 
     def _set_opacity(self, value):
         self.options["opacity"] = value
-        _set_alpha(self, value)
+        self._apply("opacity")
         self.on_save()
 
     # ---------- 贴边自动隐藏 ----------
