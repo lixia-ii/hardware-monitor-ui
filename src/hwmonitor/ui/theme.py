@@ -239,6 +239,10 @@ def apply_style(root):
     s.configure("Treeview.Heading", background=TRACK, foreground=SUB,
                 bordercolor=BORDER, lightcolor=TRACK, darkcolor=TRACK, padding=("6p", "5p"))
     s.map("Treeview.Heading", background=[("active", BORDER)], relief=[("active", "flat")])
+    s.configure("Router.Treeview", font=(FONT, 8), rowheight=root.winfo_pixels("23p"))
+    s.layout("Router.Treeview", [("Treeview.treearea", {"sticky": "nswe"})])
+    s.configure("Router.Treeview.Heading", font=(FONT, 8), background=CARD,
+                lightcolor=CARD, darkcolor=CARD, bordercolor=CARD, relief="flat", padding=("5p", "5p"))
     s.configure("Vertical.TScrollbar", background=TRACK, troughcolor=BG,
                 bordercolor=BG, lightcolor=TRACK, darkcolor=TRACK, arrowcolor=SUB)
     s.map("Vertical.TScrollbar", background=[("active", BORDER), ("pressed", MUTED)])

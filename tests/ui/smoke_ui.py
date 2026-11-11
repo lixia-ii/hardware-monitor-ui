@@ -16,7 +16,8 @@ sys.path[:0] = [str(ROOT), str(ROOT / "src")]
 from tests.support import sample_tree
 from hwmonitor import paths, settings
 from hwmonitor.core import diagnostics
-from hwmonitor.sensors import openwrt, reading, remote
+from hwmonitor.sensors import openwrt, reading, remote, tplink
+from hwmonitor.system import credentials
 from hwmonitor.ui import floating as floating_mod, main_window
 from tkinter import ttk
 
@@ -220,7 +221,7 @@ with patch("hwmonitor.sensors.remote.Device.read", side_effect=lambda *args, **k
             assert app.settings["routers"][1]["url"] == second_url.get()
             assert app.settings["routers"][0]["url"] == settings.DEFAULT_ROUTER["url"]
             # One mouse click opens a real confirmation; cancel/close preserve the device.
-            delete_button = names[1].control.winfo_children()[1]
+            delete_button = find(second_head.router_body, ttk.Button, lambda w: w.cget("text") == "删除设备")
             def click_delete(answer):
                 replies = []
                 def respond():
@@ -267,7 +268,7 @@ with patch("hwmonitor.sensors.remote.Device.read", side_effect=lambda *args, **k
             assert len(type_rows) == len(app.settings["routers"]), "Device type remained outside device panels"
             assert all(row.master is router_rows("设备名称")[i].master for i, row in enumerate(type_rows))
             device_type = find(type_rows[1].control, ttk.Combobox)
-            assert list(device_type.cget("values")) == ["OpenWrt", "远程电脑"]
+            assert list(device_type.cget("values")) == ["OpenWrt", "远程电脑", "TP-Link（原厂固件）"]
             device_id = app.settings["routers"][-1]["id"]
             device_type.current(1)
             device_type.event_generate("<<ComboboxSelected>>")
@@ -290,8 +291,102 @@ with patch("hwmonitor.sensors.remote.Device.read", side_effect=lambda *args, **k
             assert app.settings["routers"][1]["url"] == "http://192.168.1.8:8085/data.json"
             assert len(router_rows("WAN 网卡")) == 2
             assert app.settings["routers"][0].get("type", "openwrt") == "openwrt"
+            # TP-Link credentials can be entered while monitoring is off; save enables it.
+            app.settings["routers"][1]["url"] = settings.DEFAULT_ROUTER["url"]
+            device_type = find(router_rows("设备类型")[1].control, ttk.Combobox)
+            device_type.current(2)
+            device_type.event_generate("<<ComboboxSelected>>")
+            assert app.settings["routers"][1]["type"] == "tplink"
+            assert app.settings["routers"][1]["url"] == "http://192.168.0.1"
+            assert len(router_rows("WAN 网卡")) == 1
+            notify_switch = router_rows("设备上下线提醒")[0].switch
+            assert app.settings["routers"][1].get("notify_clients", True)
+            notify_switch.invoke()
+            assert not app.settings["routers"][1]["notify_clients"]
+            notify_switch.invoke()
+            assert app.settings["routers"][1]["notify_clients"]
+            router_rows("显示设备状态")[1].switch.invoke()
+            password_row = router_rows("管理员密码")[0]
+            password_entry = find(password_row.control, ttk.Entry)
+            assert password_entry.instate(["!disabled"]) and password_entry.cget("show")
+            test_password = "UI test 密码 with spaces"
+            password_entry.insert(0, test_password)
+            # Never contact a real router during a GUI test.
+            with patch.object(tplink.Router, "read", return_value=tplink.empty_reading("测试连接")):
+                find(password_row.control, ttk.Button).invoke()
+                assert password_entry.get() == ""
+                cfg = app.settings["routers"][1]
+                assert cfg["enabled"]
+                assert credentials.unprotect(cfg["password_protected"]) == test_password
+                saved = (paths.DATA / "settings.json").read_text(encoding="utf-8")
+                assert test_password not in saved
+                first_secret = cfg["password_protected"]
+                find(password_row.control, ttk.Button).invoke()
+                assert app.settings["routers"][1]["password_protected"] != first_secret
+                data = dict(app.data, routers=[dict(tplink.empty_reading("登录失败，请重新输入密码后连接"),
+                                                  id=device_id, name="TP-Link", type="tplink")])
+                app.render(data)
+                box, (_, _, vals) = app.router_widgets[device_id]
+                assert "登录失败" in vals["status"].cget("text")
+                assert "cpu_load" not in vals and "temp" not in vals
+                online = dict(tplink.parse_wan({"network": {"wan_status": {"up_speed": "1024", "down_speed": "2048", "ipaddr": "192.0.2.1"}}}),
+                              id=device_id, name="TP-Link", type="tplink", clients=5)
+                app.render(dict(data, routers=[online]))
+                assert vals["clients"].cget("text") == "5" and vals["wan_ip"].cget("text") == "192.0.2.1"
+                terminals = tplink.parse_terminals({"hosts_info": {"online_host": [
+                    {"host_1": {"mac": "AA-BB-CC-DD-EE-01", "hostname": "%E4%B9%A6%E6%88%BF%E7%94%B5%E8%84%91", "ip": "192.0.2.10", "up_speed": "1024", "down_speed": "2048"}},
+                    {"host_2": {"mac": "AA-BB-CC-DD-EE-02", "hostname": "客厅手机", "ip": "192.0.2.11", "up_speed": "8192", "down_speed": "4096"}}]}})
+                online.update(terminals=terminals, wan_status="1", wan_connected=True, wan_uptime=39114)
+                app.render(dict(data, routers=[online]))
+                app.root.update_idletasks()
+                tree = box.terminal_tree
+                assert tree.get_children() == tuple(t["id"] for t in terminals)
+                assert tree.item(terminals[1]["id"], "text") == "2. 书房电脑", "Encoded terminal name reached UI"
+                assert tree.item(terminals[1]["id"], "values") == ("2.0 KB/s", "1.0 KB/s"), "Host rates got WAN scaling"
+                tree.selection_set(terminals[1]["id"])
+                tree.event_generate("<<TreeviewSelect>>")
+                assert "192.0.2.10" in box.terminal_note.cget("text")
+                assert vals["wan_uptime"].cget("text") == "10小时51分54秒"
+                assert vals["wan_status"].cget("text") == "已联网"
+                # Rank changes retain selection by terminal identity, not row position.
+                online["terminals"] = list(reversed(terminals))
+                app.render(dict(data, routers=[online]))
+                assert tree.get_children() == tuple(t["id"] for t in reversed(terminals))
+                assert tree.selection() == (terminals[1]["id"],)
+                app.render(dict(data, routers=[dict(online, wan_status="0", wan_connected=False, wan_uptime=None)]))
+                assert vals["wan_status"].cget("text") == "WAN 已断开"
+                assert vals["wan_uptime"].cget("text") == "--"
+                assert box.header_state.cget("text") == "WAN断开" and box.header_state.winfo_manager()
+                geometry = app.root.geometry()
+                app.root.geometry(f"{app.root.minsize()[0]}x{app.root.winfo_height()}")
+                app.root.update()
+                assert box.tplink_info.winfo_width() <= box.winfo_width()
+                assert tree.winfo_width() <= box.winfo_width(), "Ranking overflowed a narrow window"
+                assert sum(tree.column(key, "width") for key in ("#0", "down", "up")) <= tree.winfo_width(), "Upload column clipped in narrow window"
+                assert not box.terminal_scroll.winfo_manager(), "Short ranking displayed an unnecessary scrollbar"
+                many_terminals = [dict(terminals[0], id=f"host-{i}", name=f"设备 {i}") for i in range(13)]
+                app.render(dict(data, routers=[dict(online, terminals=many_terminals)]))
+                app.root.update_idletasks()
+                tree.yview_moveto(3 / 13)
+                app.root.update_idletasks()
+                assert box.terminal_top.winfo_manager(), "Scrolled ranking has no way back to leaders"
+                assert box.terminal_range.cget("text") == "第 4–9 / 13 台"
+                # Scrolling the ranking must not also move the surrounding page.
+                outer_view = app.main_canvas.yview()
+                tree.event_generate("<MouseWheel>", delta=-120)
+                app.root.update_idletasks()
+                assert tree.yview()[0] > 3 / 13
+                assert app.main_canvas.yview() == outer_view, "Ranking wheel also scrolled the page"
+                box.terminal_top.invoke()
+                app.root.update_idletasks()
+                assert tree.yview()[0] == 0 and not box.terminal_top.winfo_manager()
+                assert box.terminal_range.cget("text") == "第 1–6 / 13 台"
+                app.root.geometry(geometry)
+                app.render(data)
+                assert vals["wan_ip"].cget("text") == "--", "Disconnect retained stale WAN address"
+                assert not tree.get_children(), "Disconnect retained stale terminal ranking"
             with patch.object(app, "_confirm_delete_device", return_value=True) as confirmation:
-                router_rows("设备名称")[1].control.winfo_children()[1].invoke()
+                find(router_headers()[1].router_body, ttk.Button, lambda w: w.cget("text") == "删除设备").invoke()
                 confirmation.assert_called_once()
             assert len(app.settings["routers"]) == 1
 

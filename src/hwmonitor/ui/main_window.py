@@ -21,7 +21,7 @@ from hwmonitor.ui import theme
 from hwmonitor.ui.customize_dialog import CustomizeDialogMixin
 from hwmonitor.ui.dialogs import DialogMixin
 from hwmonitor.ui.display import (DEVICE_TITLES, GROUP_NAMES, METRIC_NAMES, fmt_gb, fmt_rate, rpm_summary,
-                                  short_gpu, temp_color, temp_summary)
+                                  short_gpu, temp_color, temp_summary, fmt_duration)
 from hwmonitor.ui.floating import FloatingWindowMixin
 from hwmonitor.ui.history_dialog import HistoryDialogMixin
 from hwmonitor.ui.info_window import InfoWindowMixin
@@ -706,6 +706,7 @@ class MainWindow(SettingsDialogMixin, CustomizeDialogMixin, HistoryDialogMixin, 
             return
         if not self._tray_events():
             return
+        self._device_notifications()
         while not self.collector.history_rows.empty():
             action, rows = self.collector.history_rows.get()
             if action == "load":
@@ -731,6 +732,29 @@ class MainWindow(SettingsDialogMixin, CustomizeDialogMixin, HistoryDialogMixin, 
             self._storage_notice = error
             self._flash(error)
         self.root.after(100, self.tick)  # 也负责响应托盘点击, 间隔不宜太长
+
+    def _device_notifications(self):
+        groups = {}
+        configs = {cfg["id"]: cfg for cfg in self.settings["routers"]}
+        while True:
+            try:
+                event = self.collector.device_events.get_nowait()
+            except queue.Empty:
+                break
+            cfg = configs.get(event["router_id"], {})
+            if cfg.get("enabled") and cfg.get("notify_clients", True):
+                groups.setdefault(event["router_id"], []).append(event)
+        for ident, events in groups.items():
+            parts = []
+            for online, title in ((True, "上线"), (False, "下线")):
+                names = [e["name"] for e in events if e["online"] == online]
+                if names:
+                    shown = "、".join(name[:24] for name in names[:4])
+                    parts.append(title + "：" + shown + (f" 等 {len(names)} 台" if len(names) > 4 else ""))
+            message = configs[ident]["name"] + " · " + "；".join(parts)
+            self.recent_alerts.append({"time": time.strftime("%Y-%m-%d %H:%M:%S"), "message": message})
+            if not self.tray.notify("设备上下线", message):
+                self._flash(message)
 
     @staticmethod
     def _set(label, text, fg=None):
@@ -888,7 +912,7 @@ class MainWindow(SettingsDialogMixin, CustomizeDialogMixin, HistoryDialogMixin, 
         """收起时标题行显示利用率、网卡和网速摘要; 展开后这些读数都在下方, 标题行只留名称。
         离线提示是状态而非读数, 展开时也保留。"""
         expanded = bool(box.winfo_manager())
-        offline = box.header_state.cget("text") == "未连接"
+        offline = box.header_state.cget("text") in ("未连接", "WAN断开", "连接中", "断开中", "WAN异常")
         shown = {box.cpu_usage: not expanded, box.header_divider: not expanded, box.header_rates: not expanded,
                  box.header_state: offline or (not expanded and box.device_type != "hwmonitor")}
         if box.device_type == "hwmonitor":
@@ -943,7 +967,7 @@ class MainWindow(SettingsDialogMixin, CustomizeDialogMixin, HistoryDialogMixin, 
                 box = self._card(self.main_content, r.get("name") or "路由器", collapse_key=key)
                 box.device_type = kind
                 state, rates = self._device_header(box, kind)
-                if kind == "hwmonitor":
+                if kind in ("hwmonitor", "tplink"):
                     box.pref_group = "device:" + ident
                     widgets = (state, rates, {})
                 else:
@@ -957,11 +981,17 @@ class MainWindow(SettingsDialogMixin, CustomizeDialogMixin, HistoryDialogMixin, 
                 box.device_name = pref.get("name") or name
                 self._fit_device_name(box)
             cpu = None if r["offline"] else r.get("cpu_load")
-            self._set(box.cpu_usage, "C --%" if cpu is None else f"C {cpu:.0f}%", MUTED if cpu is None else FG)
+            if kind == "tplink":
+                clients = r.get("clients")
+                self._set(box.cpu_usage, "设备 --" if clients is None else f"设备 {clients}", MUTED if clients is None else FG)
+            else:
+                self._set(box.cpu_usage, "C --%" if cpu is None else f"C {cpu:.0f}%", MUTED if cpu is None else FG)
             if kind == "hwmonitor":
                 gpu = None if r["offline"] else r.get("gpu_load")
                 self._set(box.gpu_usage, "G --%" if gpu is None else f"G {gpu:.0f}%", MUTED if gpu is None else FG)
                 self._render_remote(box, r, widgets)
+            elif kind == "tplink":
+                self._render_tplink(box, r, widgets)
             else:
                 self._render_router(r, widgets, box)
         # 便于单路由器界面访问首台；卡片和收起状态始终按设备 ID 保存。
@@ -1004,6 +1034,179 @@ class MainWindow(SettingsDialogMixin, CustomizeDialogMixin, HistoryDialogMixin, 
         self._rows(box, rows, "暂无传感器数据", self._value)
         vals.clear()
         vals.update(box._vals)
+
+    def _render_tplink(self, box, data, widgets):
+        state, rates, vals = widgets
+        wan_labels = {"0": "WAN 已断开", "1": "已联网", "2": "正在连接", "3": "正在断开", "4": "WAN 连接异常"}
+        text = "未连接" if data["offline"] else {"0": "WAN断开", "2": "连接中", "3": "断开中", "4": "WAN异常"}.get(data.get("wan_status"), "WAN")
+        if state.cget("text") != text:
+            self._set(state, text, RED if data["offline"] or data.get("wan_connected") is False else MUTED)
+            box.sync_header()
+        self._render_rates(rates, data)
+        status = data.get("status") or ("未连接" if data["offline"] else "已连接路由器")
+        clients = data.get("clients")
+        net = self._rate_text(data, "down_rate", "up")
+        rows = [("status", "连接状态", status, RED if data["offline"] else FG, None),
+                ("wan_status", "联网状态", "--" if data["offline"] else wan_labels.get(data.get("wan_status"), "未知"),
+                 RED if data.get("wan_connected") is False else "#86efac" if data.get("wan_connected") else FG, None),
+                ("clients", "在线设备", "--" if clients is None else str(clients), MUTED if clients is None else FG, None),
+                ("wan_uptime", "WAN 在线时长", fmt_duration(data.get("wan_uptime")), FG, None),
+                ("wan_ip", "WAN IP", data.get("wan_ip") or "--", FG if data.get("wan_ip") else MUTED, None),
+                ("net", "WAN 网速", net, MUTED if net == "--" else "#93c5fd", None)]
+        def make_value(parent):
+            label = self._value(parent)
+            label.config(font=(FONT, 9), justify="right", wraplength="180p")
+            parent.bind("<Configure>", lambda _: label.config(wraplength=max(
+                60, parent.winfo_width() - parent.winfo_children()[0].winfo_reqwidth() - parent.winfo_pixels("12p"))))
+            return label
+        if not hasattr(box, "tplink_info"):
+            box.tplink_info = tk.Frame(box, bg=CARD)
+            box.tplink_info.pref_group = box.pref_group
+            box.tplink_info.pack(fill="x")
+        self._rows(box.tplink_info, rows, "暂无路由器数据", make_value)
+        self._layout_tplink_info(box.tplink_info)
+        vals.clear()
+        vals.update(box.tplink_info._vals)
+        self._render_terminal_ranking(box, None if data["offline"] else data.get("terminals"))
+
+    @staticmethod
+    def _layout_tplink_info(info):
+        """保留字段的自定义名称、顺序和可见性, 将概览排成两列信息块。"""
+        if getattr(info, "tile_keys", None) == info._keys:
+            return
+        info.tile_keys = list(info._keys)
+        for column in (0, 1):
+            info.columnconfigure(column, weight=1, uniform="overview")
+        for value in info._vals.values():
+            value.master.pack_forget()
+        row, column = 0, 0
+        for key, _ in info._keys:
+            value = info._vals[key]
+            frame = value.master
+            title = frame.winfo_children()[0]
+            frame.pack_forget()
+            wide = key in ("status", "net")
+            if wide and column:
+                row, column = row + 1, 0
+            frame.config(bg=FIELD if key != "status" else CARD, padx="7p", pady="3p")
+            frame.grid(row=row, column=column, columnspan=2 if wide else 1, sticky="nsew",
+                       padx=(0 if wide or column == 0 else "3p", 0 if wide or column else "3p"),
+                       pady=(0, "4p"))
+            title.config(bg=frame.cget("bg"), fg=MUTED, font=(FONT, 8))
+            value.pack_forget()
+            value.config(bg=frame.cget("bg"), font=(FONT, 9), anchor="w", justify="left")
+            if wide:
+                value.pack(side="right")
+            else:
+                title.pack_forget()
+                title.pack(anchor="w")
+                value.pack(fill="x", pady=("2p", 0))
+                frame.bind("<Configure>", lambda event, label=value: label.config(
+                    wraplength=max(30, event.width - event.widget.winfo_pixels("14p"))))
+            if wide or column:
+                row, column = row + 1, 0
+            else:
+                column = 1
+
+    def _render_terminal_ranking(self, box, terminals):
+        if not hasattr(box, "terminal_tree"):
+            heading = tk.Frame(box, bg=CARD)
+            heading.pack(fill="x", pady=("7p", "6p"))
+            tk.Label(heading, text="终端流量", bg=CARD, fg=FG,
+                     font=(FONT, 9, "bold")).pack(side="left")
+            box.terminal_range = tk.Label(heading, text="按总流量排序", bg=CARD, fg=MUTED, font=(FONT, 8))
+            box.terminal_range.pack(side="right")
+            box.terminal_panel = tk.Frame(box, bg=CARD)
+            box.terminal_panel.pack(fill="x")
+            tree = ttk.Treeview(box.terminal_panel, columns=("down", "up"), style="Router.Treeview",
+                                show="tree headings", selectmode="browse", height=1)
+            tree.heading("#0", text="设备", anchor="w")
+            tree.column("#0", width=1, minwidth=0, stretch=False)
+            for key, label in (("down", "↓ 下载"), ("up", "↑ 上传")):
+                tree.heading(key, text=label, anchor="e")
+                tree.column(key, width=1, minwidth=0, stretch=False, anchor="e")
+            scroll = ttk.Scrollbar(box.terminal_panel, orient="vertical", style="Thin.Vertical.TScrollbar", command=tree.yview)
+            box.terminal_scroll = scroll
+            box.terminal_top = ttk.Button(heading, text="回到榜首", style="Card.TButton",
+                                          command=lambda: tree.yview_moveto(0), cursor="hand2")
+            def scroll_state(first, last):
+                scroll.set(first, last)
+                count = len(tree.get_children())
+                start = min(count, int(round(float(first) * count)) + 1)
+                end = min(count, int(round(float(last) * count)))
+                self._set(box.terminal_range, f"第 {start}–{end} / {count} 台" if count else "暂无终端")
+                if float(first) > 0:
+                    if not box.terminal_top.winfo_manager():
+                        box.terminal_top.pack(side="right", padx=("6p", 0), before=box.terminal_range)
+                else:
+                    box.terminal_top.pack_forget()
+            tree.configure(yscrollcommand=scroll_state)
+            def mousewheel(event):
+                if event.delta and len(tree.get_children()) > int(tree.cget("height")):
+                    before = tree.yview()
+                    steps = max(1, abs(event.delta) // 120)
+                    tree.yview_scroll(-steps if event.delta > 0 else steps, "units")
+                    if tree.yview() != before:
+                        return "break"  # 表格滚动时不再触发 Treeview 类绑定和主页面滚动。
+                return None  # 到达列表边缘时, 滚轮继续滚动主页面。
+            tree.bind("<MouseWheel>", mousewheel)
+            tree.pack(fill="x", expand=True)
+            tree.tag_configure("even", background=FIELD)
+            tree.tag_configure("odd", background=CARD)
+            box.terminal_tree = tree
+            from tkinter import font
+            name_font = font.Font(font=(FONT, 8))
+            def fit_columns(_=None):
+                # 按控件实际宽度分配, 避免 Treeview 的默认最小列宽把上传列挤出窗口。
+                available = max(3, tree.winfo_width() - 2)
+                rate_width = min(box.winfo_pixels("65p"), available // 3)
+                name_width = available - 2 * rate_width
+                tree.column("#0", width=name_width)
+                for key in ("down", "up"):
+                    tree.column(key, width=rate_width)
+                for index, ident in enumerate(tree.get_children()):
+                    terminal = box.terminal_data.get(ident)
+                    if terminal:
+                        tree.item(ident, text=self._elide(name_font, f"{index + 1}. {terminal['name']}",
+                                                         max(0, name_width - box.winfo_pixels("12p"))))
+            box.fit_terminal_columns = fit_columns
+            tree.bind("<Configure>", fit_columns)
+            tree.bind("<Button-1>", lambda event: "break" if tree.identify_region(event.x, event.y) == "separator" else None)
+            box.terminal_note = tk.Label(box, bg=CARD, fg=MUTED, font=(FONT, 8), anchor="w", justify="left", wraplength="260p")
+            box.terminal_note.pack(fill="x", pady=("4p", 0))
+            def details(_=None):
+                selected = tree.selection()
+                terminal = box.terminal_data.get(selected[0]) if selected else None
+                if terminal:
+                    box.terminal_note.config(text=f"{terminal['name']} · {terminal['ip'] or 'IP 未提供'}")
+                elif box.terminal_data:
+                    box.terminal_note.config(text="选择终端查看名称和 IP 地址")
+            tree.bind("<<TreeviewSelect>>", details)
+            box.terminal_details = details
+            box.bind("<Configure>", lambda _: box.terminal_note.config(wraplength=max(60, box.winfo_width())), add="+")
+        tree = box.terminal_tree
+        box.terminal_data = {t["id"]: t for t in (terminals or [])}
+        for ident in tree.get_children():
+            if ident not in box.terminal_data:
+                tree.delete(ident)
+        for index, terminal in enumerate(terminals or []):
+            ident = terminal["id"]
+            values = tuple(" ".join(fmt_rate(terminal.get(key))[:2]).strip() for key in ("down_rate", "up"))
+            if not tree.exists(ident):
+                tree.insert("", "end", iid=ident)
+            tree.item(ident, text=f"{index + 1}. {terminal['name']}", values=values,
+                      tags=("even" if index % 2 == 0 else "odd",))
+            tree.move(ident, "", index)
+        tree.configure(height=max(1, min(6, len(box.terminal_data))))
+        if len(box.terminal_data) > 6:
+            box.terminal_scroll.pack(side="right", fill="y", before=tree)
+        else:
+            box.terminal_scroll.pack_forget()
+        box.fit_terminal_columns()
+        if not terminals:
+            box.terminal_note.config(text="终端数据暂不可用" if terminals is None else "暂无在线终端")
+        else:
+            box.terminal_details()
 
     @staticmethod
     def _rate_text(d, down, up):

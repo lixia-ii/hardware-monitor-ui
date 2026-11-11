@@ -8,7 +8,8 @@ import time
 
 from hwmonitor import paths
 from hwmonitor.core.history import HistoryStore, sample
-from hwmonitor.sensors import openwrt, reading, remote
+from hwmonitor.core.device_presence import DevicePresence
+from hwmonitor.sensors import openwrt, reading, remote, tplink
 
 log = logging.getLogger(__name__)
 
@@ -31,6 +32,8 @@ class Collector(threading.Thread):
         self.routers = {"primary": self.router}
         self.device_types = {"primary": "openwrt"}
         self.router_pool = None
+        self.device_events = queue.SimpleQueue()
+        self.presence = {}
 
     def configure(self, settings):
         with self.lock:
@@ -59,25 +62,36 @@ class Collector(threading.Thread):
         if not options["enabled"]:
             return None
         try:
+            if options.get("type") == "tplink":
+                return router.read(options["url"], password_protected=options.get("password_protected", ""))
             return (router or self.router).read(options["url"], options["nic"])
         except Exception:
             log.exception("Device sampling failed")
-            return remote.empty_reading() if options.get("type") == "hwmonitor" else openwrt.empty_reading()
+            return (tplink.empty_reading() if options.get("type") == "tplink" else
+                    remote.empty_reading() if options.get("type") == "hwmonitor" else openwrt.empty_reading())
 
     def _read_routers(self, options):
         active = [cfg for cfg in options["routers"] if cfg["enabled"]]
         ids = {cfg["id"] for cfg in active}
         self.routers = {key: value for key, value in self.routers.items() if key in ids}
         self.device_types = {key: value for key, value in self.device_types.items() if key in ids}
+        self.presence = {key: value for key, value in self.presence.items() if key in ids}
         for cfg in active:
             kind = cfg.get("type", "openwrt")
             if cfg["id"] not in self.routers or self.device_types.get(cfg["id"]) != kind:
-                self.routers[cfg["id"]] = (remote.Device() if kind == "hwmonitor" else
+                self.routers[cfg["id"]] = (tplink.Router() if kind == "tplink" else remote.Device() if kind == "hwmonitor" else
                                             self.router if cfg["id"] == "primary" else openwrt.Router())
             self.device_types[cfg["id"]] = kind
+            if kind == "tplink":
+                self.presence.setdefault(cfg["id"], DevicePresence())
+            else:
+                self.presence.pop(cfg["id"], None)
 
         def read_one(cfg):
             result = self._read_router(cfg, self.routers[cfg["id"]])
+            if cfg["id"] in self.presence:
+                for event in self.presence[cfg["id"]].update(cfg, result):
+                    self.device_events.put(event)
             return dict(result, id=cfg["id"], name=cfg["name"], type=cfg.get("type", "openwrt"))
 
         return list(self.router_pool.map(read_one, active)) if self.router_pool else [read_one(cfg) for cfg in active]

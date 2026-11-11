@@ -25,14 +25,17 @@ paths / settings: 各层共用的基础模块
 | `settings.py` | 设置的默认值、字段校验、原子写入 `data/settings.json` |
 | `core/collector.py` | 唯一的采集线程：刷新硬件、解析读数、读取路由器、写历史、发布给网页服务 |
 | `core/alerts.py` | 持续高温与风扇异常告警（持续时间、恢复温差、冷却） |
+| `core/device_presence.py` | TP-Link 终端状态变化确认，首次/恢复静默建立基准；事件经独立队列送到 UI，避免采样队列覆盖而丢失提醒 |
 | `core/history.py` | SQLite 历史存储、显卡身份合并、曲线精简、CSV 导出 |
 | `core/diagnostics.py` | 滚动日志与诊断报告（不含环境变量和私有路径） |
 | `sensors/lhm.py` | 加载 LibreHardwareMonitorLib（pythonnet），打开/刷新/关闭硬件，输出与 LHM `data.json` 相同结构的树 |
 | `sensors/reading.py` | 解析传感器树，归一化成界面使用的读数（CPU/显卡/内存/网速/风扇/各类温度） |
 | `sensors/nvidia.py` | 硬件库不可用时用 `nvidia-smi` 兜底 |
 | `sensors/openwrt.py` | OpenWrt 路由器指标（prometheus-node-exporter-lua） |
+| `sensors/tplink.py` | TP-Link 原厂固件登录、会话复用、WAN 状态/在线时长与终端排行只读查询，密码错误后停止重试 |
 | `sensors/hwinfo.py` | 硬件信息窗口与诊断用的静态硬件清单（WMI） |
 | `system/elevation.py` | 以管理员身份重新启动 |
+| `system/credentials.py` | Windows DPAPI 加密/解密设备密码，当前 Windows 用户范围 |
 | `system/autostart.py` | 任务计划程序开机自启，程序移动后自动修正路径 |
 | `system/tray.py` | 托盘图标、气泡通知、单实例互斥量（纯 ctypes） |
 | `system/pawnio.py` | PawnIO 驱动检测与安装 |

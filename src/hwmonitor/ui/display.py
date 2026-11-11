@@ -9,6 +9,16 @@ GROUP_NAMES = {"network": "网络", "router": "设备", "case": "机箱风扇", 
 DEVICE_TITLES = {"cpu_temp": "CPU", "gpu_temp": "显卡"}  # 温度隐藏后卡片标题退回设备名
 
 
+def fmt_duration(seconds):
+    if seconds is None:
+        return "--"
+    seconds = int(seconds)
+    days, seconds = divmod(seconds, 86400)
+    hours, seconds = divmod(seconds, 3600)
+    minutes, seconds = divmod(seconds, 60)
+    return (f"{days}天" if days else "") + (f"{hours}小时" if hours or days else "") + f"{minutes}分{seconds}秒"
+
+
 def short_gpu(name):
     """显卡名去掉厂商前缀等, 放进小标签: "NVIDIA GeForce RTX 4060" -> "RTX 4060", "Intel(R) UHD Graphics 770" -> "UHD 770"。"""
     s = re.sub(r"\((?:R|TM)\)|\b(?:NVIDIA|AMD|Intel|GeForce|Graphics)\b|\bRadeon\s+(?=RX\b)", " ", name, flags=re.I)

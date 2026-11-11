@@ -9,7 +9,7 @@ from tkinter import ttk, filedialog
 from hwmonitor import __version__, paths, settings
 from hwmonitor.core import diagnostics
 from hwmonitor.sensors import hwinfo
-from hwmonitor.system import autostart
+from hwmonitor.system import autostart, credentials
 from hwmonitor.system.webserver import lan_addresses
 from hwmonitor.ui.theme import ACCENT, BG, BORDER, CARD, FG, FONT, MUTED, NAV_HOVER, RED, SUB
 
@@ -419,14 +419,13 @@ class SettingsDialogMixin:
         self._save_option("routers", items)
 
     def _router_page(self, page):
-        group = self._group(page, "设备管理")
-        row = self._row(group, "加入设备", "加入后在下方展开设备，选择类型并设置名称和地址")
+        row = self._row(page, "加入设备", "连接路由器或远程电脑，在主界面集中查看设备状态")
         editors = tk.Frame(page, bg=BG)
         editors.pack(fill="x")
         # 每台设备一个独立容器, 只增删或替换对应的那一个: 整体重建会让页面瞬间变短, 滚动条闪烁、页面跳动。
         def build(cfg, before=None):
-            box = tk.Frame(editors, bg=BG)
-            box.pack(fill="x", **({"before": before} if before is not None else {}))
+            box = tk.Frame(editors, bg=CARD, highlightbackground=BORDER, highlightthickness=1)
+            box.pack(fill="x", pady=("10p", 0), **({"before": before} if before is not None else {}))
             def rebuild():
                 current = next(item for item in self.settings["routers"] if item["id"] == cfg["id"])
                 build(current, before=box)  # 先建好新的再删旧的, 页面高度不会中途缩短
@@ -436,12 +435,16 @@ class SettingsDialogMixin:
             cfg = dict(settings.DEFAULT_ROUTER, id=uuid4().hex, name=settings.new_device_name(self.settings["routers"]))
             self._save_routers([*self.settings["routers"], cfg])
             build(cfg)
-        ttk.Button(row.control, text="加入设备", style="Card.TButton", command=add).pack()
+        ttk.Button(row.control, text="＋ 添加设备", style="Accent.TButton", command=add).pack()
         for cfg in self.settings["routers"]:
             build(cfg)
 
         # 帮助的折叠键不用 router-settings: 前缀, 否则删除设备时会被当作残留键清掉
         _, group = self._fold_section(page, "配置帮助", "settings:router-help")
+        self._row(group, "接入 TP-Link 路由器",
+                  "选择“TP-Link（原厂固件）”，填写管理地址，在管理员密码框中输入密码，点击“保存并连接”。\n"
+                  "密码由 Windows 加密保存，仅当前 Windows 用户可读取；复制到其他电脑后需重新输入。\n"
+                  "适配 TL-XDR3040 易展版的登录与 WAN 接口；登录失败后停止重试，重新输入密码再连接。")
         self._row(group, "接入远程电脑",
                   "1. 在对方电脑打开“硬件监控”，进入 设置 → 常规 → 网页服务\n"
                   "2. 开启“启用网页服务”和“允许局域网访问”\n"
@@ -452,19 +455,32 @@ class SettingsDialogMixin:
                   "uci commit 后重启该服务\n"
                   "3. 在浏览器打开上面的地址，能看到 node_load1 等文本即可；启用并连接后可选择 WAN 网卡")
 
-    def _fold_section(self, page, title, key):
+    def _fold_section(self, page, title, key, subtitle=None):
         """可折叠的分组: 标题行 (箭头、标题、展开/收起) + 内容框架, 折叠状态以 key 存入 collapsed。
         点击标题行或聚焦后按回车/空格切换。返回 (标题行, 内容框架)。"""
         expanded_glyph, collapsed_glyph, glyph_font = self._chevrons()
-        head = tk.Frame(page, bg=BG, cursor="hand2", takefocus=True)
-        head.pack(fill="x", pady=("12p", "6p"))
-        arrow = tk.Label(head, bg=BG, fg=SUB, font=glyph_font)
+        bg = CARD if subtitle is not None else BG
+        head = tk.Frame(page, bg=bg, cursor="hand2", takefocus=True,
+                        padx="12p" if subtitle is not None else 0, pady="10p" if subtitle is not None else 0)
+        head.pack(fill="x", pady=0 if subtitle is not None else ("12p", "6p"))
+        arrow = tk.Label(head, bg=bg, fg=SUB, font=glyph_font)
         arrow.pack(side="left", padx=(0, "6p"))
-        head.label = tk.Label(head, text=title, bg=BG, fg=SUB, font=(FONT, 9, "bold"), anchor="w")
-        head.label.pack(side="left", fill="x", expand=True)
-        action = tk.Label(head, bg=BG, fg=MUTED, font=(FONT, 9))
+        text = tk.Frame(head, bg=bg)
+        text.pack(side="left", fill="x", expand=True)
+        head.label = tk.Label(text, text=title, bg=bg, fg=FG if subtitle is not None else SUB,
+                              font=(FONT, 10 if subtitle is not None else 9, "bold"), anchor="w", justify="left")
+        head.label.pack(fill="x")
+        head.subtitle = tk.Label(text, text=subtitle or "", bg=bg, fg=MUTED, font=(FONT, 8), anchor="w")
+        if subtitle is not None:
+            head.subtitle.pack(fill="x", pady=("3p", 0))
+        action = tk.Label(head, bg=bg, fg=MUTED, font=(FONT, 8))
         action.pack(side="right")
-        group = tk.Frame(page, bg=BG)
+        group = tk.Frame(page, bg=bg)
+        def rewrap(_=None):
+            width = max(40, text.winfo_width())
+            head.label.config(wraplength=width)
+            head.subtitle.config(wraplength=width)
+        text.bind("<Configure>", rewrap)
 
         def refresh():
             collapsed = key in self.settings["collapsed"]
@@ -489,7 +505,7 @@ class SettingsDialogMixin:
             return "break"
 
         head.toggle = toggle
-        for widget in (head, arrow, head.label, action):
+        for widget in (head, arrow, text, head.label, head.subtitle, action):
             widget.config(cursor="hand2")
             widget.bind("<Button-1>", toggle)
         head.bind("<Return>", toggle)
@@ -500,29 +516,47 @@ class SettingsDialogMixin:
     def _router_editor(self, page, cfg, rebuild):
         """单台设备的设置: 可折叠的标题行 + 设置行。page 是这台设备独占的容器; 更换类型时 rebuild() 原位重建。"""
         is_remote = cfg.get("type") == "hwmonitor"
+        is_tplink = cfg.get("type") == "tplink"
+        kinds = ("openwrt", "hwmonitor", "tplink")
+        defaults = {"openwrt": settings.DEFAULT_ROUTER, "hwmonitor": settings.DEFAULT_REMOTE,
+                    "tplink": settings.DEFAULT_TPLINK}
         def save(**changes):
             items = self.settings["routers"]
             self._save_routers([{**item, **changes} if item["id"] == cfg["id"] else item for item in items])
-        head, group = self._fold_section(page, cfg["name"], "router-settings:" + cfg["id"])
+            if "enabled" in changes:
+                head.subtitle.config(text=kind_label + ("  ·  监控已开启" if changes["enabled"] else "  ·  监控已关闭"))
+        kind_label = "TP-Link · 原厂固件" if is_tplink else "远程电脑 · 硬件监控" if is_remote else "OpenWrt · 路由器"
+        head, group = self._fold_section(page, cfg["name"], "router-settings:" + cfg["id"],
+                                         kind_label + ("  ·  监控已开启" if cfg["enabled"] else "  ·  监控已关闭"))
         title = head.label
         head.router_id = cfg["id"]
         head.router_body = group
-        type_row = self._row(group, "设备类型", "支持 OpenWrt 和远程电脑；更换类型后请确认指标地址")
+        def section(label, before=None):
+            label = tk.Label(group, text=label, bg=CARD, fg=SUB, font=(FONT, 8, "bold"), anchor="w",
+                             padx="12p", pady="7p")
+            label.pack(fill="x", **({"before": before} if before is not None else {}))
+        def field(title, desc="", stacked=False):
+            row = self._row(group, title, desc, stacked=stacked)
+            row.pack_configure(pady=0)
+            row.configure(pady="7p")
+            return row
+        section("连接设置")
+        type_row = field("设备类型")
         def change_type(index):
-            kind = ("openwrt", "hwmonitor")[index]
+            kind = kinds[index]
             if kind == cfg.get("type", "openwrt"):
                 return
             current = next(item for item in self.settings["routers"] if item["id"] == cfg["id"])
-            old_default = settings.DEFAULT_REMOTE if is_remote else settings.DEFAULT_ROUTER
-            new_default = settings.DEFAULT_REMOTE if kind == "hwmonitor" else settings.DEFAULT_ROUTER
+            old_default = defaults[cfg.get("type", "openwrt")]
+            new_default = defaults[kind]
             url = new_default["url"] if current["url"] == old_default["url"] else current["url"]
-            save(type=kind, url=url, nic=None)
+            save(type=kind, url=url, nic=None, password_protected="")
             rebuild()
-        self._choice(type_row, ("OpenWrt", "远程电脑"), 1 if is_remote else 0, change_type)
-        row = self._row(group, "设备名称", "远程电脑 · 硬件监控" if is_remote else "OpenWrt · 路由器")
+        self._choice(type_row, ("OpenWrt", "远程电脑", "TP-Link（原厂固件）"), kinds.index(cfg.get("type", "openwrt")), change_type)
+        row = field("设备名称")
         name = tk.StringVar(value=cfg["name"])
         name_entry = ttk.Entry(row.control, textvariable=name, width=18, style="Card.TEntry")
-        name_entry.pack(side="left")
+        name_entry.pack(fill="x")
         def save_name(_=None):
             value = name.get().strip()[:60] or cfg["name"]
             name.set(value)
@@ -536,15 +570,20 @@ class SettingsDialogMixin:
                 return
             self._save_routers([item for item in self.settings["routers"] if item["id"] != cfg["id"]])
             page.destroy()
-        ttk.Button(row.control, text="删除", style="Card.TButton", command=remove).pack(side="left", padx=("6p", 0))
-        row = self._row(group, "显示设备状态", "在主界面显示远程电脑的硬件数据" if is_remote else "在主界面显示路由器温度、CPU、内存、负载和 WAN 网速")
-        self._switch(row, cfg["enabled"], lambda on: (save(enabled=on), self._enable(rows, on)))
-        url_row = self._row(group, "指标地址", "对方电脑的网页服务地址（/data.json），只填 http://IP:端口 会自动补全" if is_remote else "路由器上 prometheus-node-exporter-lua 的 /metrics 地址", stacked=True)
+        def finish():
+            footer = tk.Frame(group, bg=CARD, padx="12p", pady="10p")
+            footer.pack(fill="x")
+            tk.Frame(footer, bg=BORDER, height=1).pack(fill="x", pady=(0, "10p"))
+            ttk.Button(footer, text="删除设备", style="Card.TButton", command=remove).pack(side="right")
+        row = self._row(group, "显示设备状态", "显示 WAN 网速、IP 和在线设备数（以固件提供的数据为准）" if is_tplink else "在主界面显示远程电脑的硬件数据" if is_remote else "在主界面显示路由器温度、CPU、内存、负载和 WAN 网速")
+        monitor_row = row
+        enabled = self._switch(row, cfg["enabled"], lambda on: (save(enabled=on), self._enable(rows, on)))
+        url_row = field("管理地址" if is_tplink else "指标地址", "例如 http://192.168.0.1" if is_tplink else "例如 http://192.168.1.2:8085/data.json" if is_remote else "例如 http://192.168.1.1:9100/metrics", stacked=True)
         url = tk.StringVar(value=cfg["url"])
         entry = ttk.Entry(url_row.control, textvariable=url, style="Card.TEntry")
         entry.pack(fill="x")
         def save_url(_=None):
-            value = settings.device_url(url.get(), "hwmonitor" if is_remote else "openwrt")
+            value = settings.device_url(url.get(), cfg.get("type", "openwrt"))
             if value:
                 url.set(value)
                 self._row_message(url_row)
@@ -555,11 +594,53 @@ class SettingsDialogMixin:
                 self._row_message(url_row, "请输入有效的 http:// 或 https:// 地址，已恢复为上次保存的地址。", error=True)
         entry.bind("<FocusOut>", save_url)
         self._finish_edit(entry, save_url)
+        if is_tplink:
+            notify_row = self._row(group, "设备上下线提醒", "终端状态持续变化后通过托盘提醒；首次连接和路由器重连时不提醒")
+            self._switch(notify_row, cfg.get("notify_clients", True), lambda on: save(notify_clients=on))
+            password_row = field("管理员密码", "已加密保存 · 留空保留原密码" if cfg.get("password_protected") else "输入路由器管理密码后连接，密码将加密保存在本机", stacked=True)
+            password = tk.StringVar()
+            password_entry = ttk.Entry(password_row.control, textvariable=password, show="●", style="Card.TEntry")
+            password_entry.pack(fill="x")
+            def connect(_=None):
+                value = settings.device_url(url.get(), "tplink")
+                if not value:
+                    self._row_message(url_row, "请输入有效的路由器管理地址。", error=True)
+                    return "break"
+                current = next(item for item in self.settings["routers"] if item["id"] == cfg["id"])
+                try:
+                    # Re-protect also on manual retry so the collector clears its login failure latch.
+                    plain = password.get() or credentials.unprotect(current.get("password_protected", ""))
+                    if not plain:
+                        raise ValueError("Empty password")
+                    protected = credentials.protect(plain)
+                except (OSError, ValueError, UnicodeError):
+                    self._row_message(password_row, "请重新输入密码；密码无法保存或读取。", error=True)
+                    return "break"
+                save(url=value, password_protected=protected, enabled=True)
+                url.set(value)
+                password.set("")
+                enabled.set(True)
+                self._enable(rows, True)
+                self._row_message(url_row)
+                self._row_message(password_row, "密码已加密保存，正在连接；连接结果显示在主界面设备卡片中。")
+                return "break"
+            ttk.Button(password_row.control, text="保存并连接", style="Accent.TButton", command=connect).pack(anchor="e", pady=("8p", 0))
+            password_entry.bind("<Return>", connect)
+            # Allow editing credentials while monitoring is off; connecting enables it.
+            rows = []
+            monitor_row.pack_configure(after=password_row)
+            notify_row.pack_configure(after=monitor_row)
+            section("监控选项", before=monitor_row)
+            finish()
+            return
+        monitor_row.pack_configure(after=url_row)
+        section("监控选项", before=monitor_row)
         if is_remote:
             rows = [url_row]
             self._enable(rows, cfg["enabled"])
+            finish()
             return
-        nic_row = self._row(group, "WAN 网卡", "用于统计上下行网速；自动时优先 pppoe-wan / wan，否则取流量最大的网卡")
+        nic_row = field("WAN 网卡", "自动选择优先使用 pppoe-wan / wan，也可指定网卡")
         router = next((item for item in (self.data or {}).get("routers", []) if item["id"] == cfg["id"]), {})
         nics = [None] + router.get("nics", [])
         if cfg["nic"] and cfg["nic"] not in nics:
@@ -568,6 +649,7 @@ class SettingsDialogMixin:
         self._choice(nic_row, names, nics.index(cfg["nic"]), lambda i: save(nic=nics[i]), width=16)
         rows = [url_row, nic_row]
         self._enable(rows, cfg["enabled"])
+        finish()
 
 
     def _data_page(self, page):

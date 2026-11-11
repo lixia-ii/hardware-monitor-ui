@@ -17,6 +17,8 @@ DEFAULT_FLOATING = {"enabled": False, "x": 40, "y": 40, "topmost": True, "autohi
                     "opacity": 1.0, "show_mem": True, "show_net": True}
 DEFAULT_ROUTER = {"enabled": False, "url": "http://192.168.1.1:9100/metrics", "nic": None}
 DEFAULT_REMOTE = {"enabled": False, "url": "http://192.168.1.2:8085/data.json", "nic": None, "type": "hwmonitor"}
+DEFAULT_TPLINK = {"enabled": False, "url": "http://192.168.0.1", "nic": None,
+                  "type": "tplink", "password_protected": "", "notify_clients": True}
 DEFAULTS = {"close_action": "ask", "topmost": False, "collapsed": [], "floating": DEFAULT_FLOATING,
             "alerts": DEFAULT_ALERTS, "interval": 1.0, "gpu_id": None, "nic_ids": None,
             "display": {}, "history_enabled": True,
@@ -42,6 +44,10 @@ def device_url(value, kind="openwrt"):
         parts.port  # 校验端口范围。
         if parts.scheme.lower() not in ("http", "https") or not parts.hostname or parts.netloc.endswith(":"):
             return None
+        if kind == "tplink":
+            if parts.username is not None or parts.password is not None:
+                return None
+            parts = parts._replace(path="", query="", fragment="")
         if kind == "hwmonitor" and parts.path in ("", "/"):
             parts = parts._replace(path="/data.json")
         return urlunsplit(parts)
@@ -102,9 +108,14 @@ def validate(raw):
                     ident += "-copy"
             used.add(ident)
             kind = item.get("type", "openwrt")
-            if kind not in ("openwrt", "hwmonitor"):
+            if kind not in ("openwrt", "hwmonitor", "tplink"):
                 continue
-            cfg = copy.deepcopy(DEFAULT_REMOTE if kind == "hwmonitor" else DEFAULT_ROUTER)
+            cfg = copy.deepcopy(DEFAULT_TPLINK if kind == "tplink" else
+                                DEFAULT_REMOTE if kind == "hwmonitor" else DEFAULT_ROUTER)
+            if kind == "tplink":
+                cfg["notify_clients"] = item.get("notify_clients", True) is True
+                password = item.get("password_protected")
+                cfg["password_protected"] = password if isinstance(password, str) and len(password) <= 16000 else ""
             cfg["enabled"] = item.get("enabled") is True
             url = item.get("url")
             valid_url = device_url(url, kind)
