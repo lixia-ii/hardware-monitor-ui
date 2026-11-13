@@ -4,13 +4,15 @@ import ipaddress
 import json
 import logging
 import math
+import re
+import secrets
 import threading
 from http.server import BaseHTTPRequestHandler
 from pathlib import Path
 from urllib.parse import urlsplit, parse_qs
 
 from hwmonitor.core import diagnostics, history, management
-from hwmonitor.system import webserver
+from hwmonitor.system import auth, mailer, webserver
 from hwmonitor.system.webbridge import WebError
 
 log = logging.getLogger(__name__)
@@ -86,6 +88,7 @@ class ManagementServer:
         self.config = (False, 0)
         self.error = None
         self.bridge = None
+        self.auth = auth.Auth()
 
     def _handler(self):
         web = self
@@ -104,7 +107,7 @@ class ManagementServer:
                 self.send_header("X-Content-Type-Options", "nosniff")
                 self.send_header("Referrer-Policy", "no-referrer")
                 self.send_header("Content-Security-Policy", "default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' data:; connect-src 'self'; frame-ancestors 'none'; base-uri 'none'; form-action 'self'")
-                for key, value in (headers or {}).items():
+                for key, value in [*(headers or {}).items(), *self.cookies]:
                     self.send_header(key, value)
                 self.end_headers()
                 self.wfile.write(body)
@@ -123,12 +126,36 @@ class ManagementServer:
                     if parts.scheme not in ("http", "https") or parts.netloc != self.headers.get("Host"):
                         raise WebError(403, "不允许跨站请求")
 
+            def _cookie(self, name):
+                return auth.cookies(self.headers.get("Cookie")).get(name)
+
+            def _pair(self):
+                """The browser's pairing id; a new one is set on this response when missing."""
+                value = self._cookie(auth.PAIR_COOKIE)
+                if not value or not re.fullmatch(r"[\w-]{16,64}", value):
+                    value = secrets.token_urlsafe(24)
+                    self.cookies.append(("Set-Cookie", auth.set_cookie(auth.PAIR_COOKIE, value, auth.PAIR_AGE)))
+                return value
+
+            def _login(self, token):
+                self.cookies.append(("Set-Cookie", auth.set_cookie(auth.SESSION_COOKIE, token, auth.SESSION_AGE)))
+
+            def _device(self, required=True):
+                token = self._cookie(auth.SESSION_COOKIE)
+                device, renew = web.auth.check(token, self.client_address[0])
+                if device is None and required:
+                    raise WebError(401, "请先登录网页管理端")
+                if renew:
+                    self._login(token)
+                return device
+
             def _call(self, action, payload=None):
                 if web.bridge is None:
                     raise WebError(503, "管理服务尚未就绪")
                 return web.bridge.call(action, payload)
 
             def _run(self, method):
+                self.cookies = []
                 try:
                     method()
                 except WebError as error:
@@ -156,8 +183,30 @@ class ManagementServer:
                     name, content_type = files[path]
                     self._send(200, (ASSETS / name).read_bytes(), content_type)
                     return
-                if path in ("/api/state", "/api/settings"):
-                    self._send(200, self._call(path[5:]))
+                if path == "/api/auth/status":
+                    pair = self._pair()
+                    if self._device(required=False):
+                        self._send(200, {"authenticated": True})
+                        return
+                    status, token = web.auth.status(pair)
+                    if token:
+                        self._login(token)
+                    self._send(200, {"authenticated": bool(token), **status})
+                    return
+                if path == "/api/auth/captcha":
+                    self._send(200, web.auth.new_captcha(self._pair()).encode("utf-8"), "image/svg+xml")
+                    return
+                if not path.startswith("/api/"):
+                    raise WebError(404, "页面不存在")
+                device = self._device()
+                if path == "/api/state":
+                    self._send(200, {**self._call("state"), "pairing": len(web.auth.active())})
+                elif path == "/api/settings":
+                    self._send(200, self._call("settings"))
+                elif path == "/api/auth/devices":
+                    mail = mailer.load()
+                    self._send(200, {"devices": web.auth.devices(device["hash"]), "pending": web.auth.active(),
+                                     "mail": {"configured": mailer.configured(mail), "to": mailer.mask(mail["mail_to"])}})
                 elif path == "/api/diagnostics":
                     snapshot = self._call("diagnostics")
                     try:
@@ -198,8 +247,32 @@ class ManagementServer:
                 except (ValueError, UnicodeError):
                     raise WebError(400, "JSON 格式无效") from None
                 self._same_origin()
+                if path == "/api/auth/request":
+                    self._send(200, web.auth.request(self._pair(), payload.get("captcha"), self.client_address[0],
+                                                     self.headers.get("User-Agent")))
+                    return
+                if path == "/api/auth/verify":
+                    self._login(web.auth.verify(self._pair(), payload.get("code")))
+                    self._send(200, {"authenticated": True})
+                    return
+                if not path.startswith("/api/"):
+                    raise WebError(404, "接口不存在")
+                device = self._device()
+                ident = payload.get("id")
                 if path == "/api/settings":
                     self._send(200, self._call("update_settings", payload))
+                elif path in ("/api/auth/approve", "/api/auth/reject"):
+                    web.auth.decide(ident, path.endswith("approve"))
+                    self._send(200, {"pending": web.auth.active()})
+                elif path == "/api/auth/revoke":
+                    if not isinstance(ident, str):
+                        raise WebError(400, "设备编号无效")
+                    web.auth.revoke(ident, device["hash"])
+                    self._send(200, {"devices": web.auth.devices(device["hash"])})
+                elif path == "/api/auth/logout":
+                    web.auth.logout(self._cookie(auth.SESSION_COOKIE))
+                    self.cookies.append(("Set-Cookie", auth.set_cookie(auth.SESSION_COOKIE, "", 0)))
+                    self._send(200, {"authenticated": False})
                 else:
                     raise WebError(404, "接口不存在")
 

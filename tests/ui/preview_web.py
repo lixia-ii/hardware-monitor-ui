@@ -1,6 +1,7 @@
 """Fixture host for browser QA. Never uses real hardware or user settings.
 
 Run: python tests/ui/preview_web.py
+The captcha is always 23456 here; pairing codes are printed to the console.
 """
 import math
 import os
@@ -18,6 +19,7 @@ os.environ["HARDWARE_MONITOR_DATA_DIR"] = str(ROOT / ".build" / "test-data" / "w
 from hwmonitor import settings
 from hwmonitor.core import history
 from hwmonitor.sensors import reading
+from hwmonitor.system import auth, captcha
 from hwmonitor.system.management_server import ManagementServer
 from hwmonitor.system.webbridge import Bridge
 from hwmonitor.ui.web_management import WebManagementMixin
@@ -32,6 +34,7 @@ class FixtureDesktop(WebManagementMixin):
         self.recent_alerts = deque([{"time":"2026-11-11 10:00:00", "message":"测试告警：CPU 温度已恢复"}])
         self.sensor_names = {}
         self.collector = SimpleNamespace(storage_error=None, configure=lambda _: None)
+        self.web = SimpleNamespace(error=None)
         self.float_win = None
         self._web_hardware = {"error":None, "model":"浏览器验证 · 模拟电脑", "os":"Windows 11", "details":[["处理器",["AMD Ryzen 测试处理器"]],["显卡",["NVIDIA GeForce 测试显卡"]]]}
         now = time.time()
@@ -63,6 +66,7 @@ class FixtureDesktop(WebManagementMixin):
 
 
 if __name__ == "__main__":
+    captcha.answer = lambda length=5: "23456"
     owner, bridge, server = FixtureDesktop(), Bridge(), ManagementServer()
     server.bridge = bridge
     error = server.apply(True, 8843)
@@ -73,6 +77,8 @@ if __name__ == "__main__":
         while True:
             owner.refresh()
             bridge.drain(owner._web_dispatch)
+            for kind, info in server.auth.drain():
+                print(auth.describe(kind, info), flush=True)
             time.sleep(.05)
     except KeyboardInterrupt:
         pass

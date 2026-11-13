@@ -13,10 +13,12 @@ from unittest.mock import patch
 ROOT = Path(__file__).resolve().parents[2]
 os.environ["HARDWARE_MONITOR_DATA_DIR"] = str(ROOT / ".build" / "test-data" / "web-smoke")
 sys.path[:0] = [str(ROOT), str(ROOT / "src")]
+(Path(os.environ["HARDWARE_MONITOR_DATA_DIR"]) / "management_devices.json").unlink(missing_ok=True)
 sys.argv.append("--self-test")  # No hardware, driver prompts, firewall or startup changes.
 
 from hwmonitor import settings
 from hwmonitor.core import history, management
+from hwmonitor.system import auth
 from hwmonitor.system.webbridge import WebError
 from hwmonitor.sensors import reading
 from hwmonitor.ui.main_window import MainWindow
@@ -34,11 +36,12 @@ config = settings.validate({"management": {"enabled": True, "port": management_p
                             "web": {"enabled": True, "port": data_port}})
 fixture = reading.read(source=type("Source", (), {"sample": lambda self: sample_tree()})(), allow_nvidia=False)
 failures, done = [], threading.Event()
+session = {}
 
 
 def request(method, path, body=None, extra=None):
     conn = http.client.HTTPConnection("127.0.0.1", management_port, timeout=10)
-    headers = {"Content-Type": "application/json", **(extra or {})}
+    headers = {"Content-Type": "application/json", **session, **(extra or {})}
     conn.request(method, path, json.dumps(body) if body is not None else None, headers)
     response = conn.getresponse()
     data = response.read()
@@ -50,6 +53,10 @@ def request(method, path, body=None, extra=None):
 def check_http(app):
     try:
         assert app.management.server.server_address[0] == "0.0.0.0"
+        assert request("GET", "/api/state")[0] == 401
+        assert request("GET", "/")[0] == 200
+        with app.management.auth.lock:
+            session["Cookie"] = f"{auth.SESSION_COOKIE}={app.management.auth._issue('smoke', '127.0.0.1')}"
         current = json.loads(request("GET", "/api/settings")[2])
         status, _, body = request("POST", "/api/settings", {"revision":current["revision"], "changes":{
             "interval":2, "topmost":True, "alerts":{"cpu_temp":91}, "floating":{"enabled":True,"opacity":.7},
@@ -130,6 +137,33 @@ with patch("hwmonitor.settings.load", return_value=config), patch("hwmonitor.cor
             assert app.web.server is None
             assert web({"enabled": True})["web_error"] is None
             assert app.web.server is not None
+            # A pairing request is shown on the main window until it is used or expires.
+            pair = "smoke-pair-0000000000"
+            with app.management.auth.lock:
+                app.management.auth.captchas[auth.digest(pair)] = ("23456", time.time() + 60)
+            with patch("hwmonitor.system.auth.mailer.load", return_value=dict(auth.mailer.DEFAULT)):
+                app.management.auth.request(pair, "23456", "192.168.1.9", "iPhone AppleWebKit")
+            app.tick()
+            app.status_msg = ("", 0.0)  # Temporary messages (here: the smoke device signing in) take precedence.
+            app._notice(None)
+            code = app.management.auth.active()[0]["code"]
+            assert code in app.status.cget("text"), app.status.cget("text")
+            app.management.auth.verify(pair, code)
+            app.tick()
+            assert code not in app.status.cget("text")
+            assert len(app.management.auth.devices(None)) == 2
+            app.show_settings("access")
+            assert app._settings_page == "access"
+            labels = []
+            pending = [app.settings_pages["access"]]
+            while pending:
+                widget = pending.pop()
+                pending.extend(widget.winfo_children())
+                if widget.winfo_class() == "Label":
+                    labels.append(widget.cget("text"))
+            for text in ("SMTP 服务器", "授权码", "收件地址", "smoke", "iPhone · 主屏幕应用", "全部移除"):
+                assert any(text in label for label in labels), text
+            app.settings_win.destroy()
             app.show_settings()
             texts = []
             def walk(widget):
@@ -150,4 +184,4 @@ with patch("hwmonitor.settings.load", return_value=config), patch("hwmonitor.cor
 
 if failures:
     raise AssertionError("\n".join(failures))
-print("Management integration passed: LAN access without login, HTTP settings -> desktop/collector/floating, history/CSV, conflicts, diagnostics, separate ports and removed rows")
+print("Management integration passed: pairing required, pairing code on the main window, HTTP settings -> desktop/collector/floating, history/CSV, conflicts, diagnostics, separate ports and removed rows")

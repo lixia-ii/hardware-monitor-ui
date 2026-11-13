@@ -41,6 +41,7 @@ paths / settings: 各层共用的基础模块
 | `system/pawnio.py` | PawnIO 驱动检测与安装 |
 | `system/webserver.py` | 兼容 `/data.json` 的传感器数据接口、局域网防火墙规则、本机地址 |
 | `system/management_server.py` / `webbridge.py` | 独立局域网手机管理服务（默认 7076）：HTTP、固定开放局域网、独立防火墙规则、HTTP 与 Tk 主线程之间的有界 RPC 队列 |
+| `system/auth.py` / `captcha.py` / `mailer.py` | 管理端登录：图形验证码（纯 SVG 路径）→ 配对码（邮件 + 本机显示 + 已登录设备批准）→ 长期设备令牌（仅存哈希，`management_devices.json`）；全局发信限流；SMTP 配置独立保存在 `mail.json`，网页不可修改 |
 | `system/web/` | 自包含手机网页、样式、脚本、主屏幕图标与 Web App manifest；不依赖 CDN |
 | `core/management.py` | 对外配置投影、密码隐藏、严格更新校验和版本冲突检测 |
 | `ui/web_management.py` | 在 Tk 主线程读取状态与历史、保存并应用网页设置；硬件概览后台读取 |
@@ -70,7 +71,8 @@ LibreHardwareMonitorLib ─(lhm.Sensors.sample)─> data.json 结构的树 ─�
 
 - 所有 .NET 调用都在采集线程里进行；界面线程只从队列取结果，不直接访问硬件。
 - 采集线程退出时关闭硬件库，释放驱动。
-- 内网数据服务与手机管理服务是两个独立实例，互不提供对方的路由。管理请求通过有界队列由 `MainWindow.tick()` 处理；超时且尚未执行的修改会取消，不会稍后静默应用。网页不能修改管理服务自身的端口和开关。
+- 内网数据服务与手机管理服务是两个独立实例，互不提供对方的路由。管理请求通过有界队列由 `MainWindow.tick()` 处理；超时且尚未执行的修改会取消，不会稍后静默应用。网页不能修改管理服务自身的端口和开关，也不能修改配对码邮件。
+- 管理端除静态文件和 `/api/auth/status|captcha|request|verify` 外都要求设备令牌 Cookie。鉴权在 HTTP 线程内完成（`Auth` 自带锁），不经过 Bridge；配对事件经 `Auth.events` 由桌面 `tick()` 显示到提示条和托盘，服务器模式写入日志。
 - 历史每 5 秒取样一次，写入 SQLite，并通过队列同步给界面的内存历史。
 
 ## 测试

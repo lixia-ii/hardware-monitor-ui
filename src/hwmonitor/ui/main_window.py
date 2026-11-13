@@ -54,6 +54,7 @@ class MainWindow(WebManagementMixin, SettingsDialogMixin, CustomizeDialogMixin, 
         self.settings = settings.load()
         self.root.report_callback_exception = lambda *args: logging.getLogger(__name__).error("Tk callback failed", exc_info=args)
         self.pawnio_missing = False  # 用户暂不安装 PawnIO 时, 提示条常驻"安装"按钮
+        self._pairing_notice = ""  # 网页管理端待使用的配对码, 有效期内常驻提示条
         self.data = None
         self.metric_blocks = {}
         self.metric_titles = {}
@@ -311,9 +312,9 @@ class MainWindow(WebManagementMixin, SettingsDialogMixin, CustomizeDialogMixin, 
         self._notice((self.data or {}).get("error"))
 
     def _notice(self, error):
-        """提示条: 有消息才显示; 缺少 pythonnet, 或缺少 PawnIO 且没有其他消息时, 显示提醒和安装按钮。"""
+        """提示条: 有消息才显示 (临时消息 > 配对码 > 读取错误); 缺少 pythonnet, 或缺少 PawnIO 且没有其他消息时, 显示提醒和安装按钮。"""
         msg, until = self.status_msg
-        msg = msg if time.monotonic() < until else error or ""
+        msg = msg if time.monotonic() < until else self._pairing_notice or error or ""
         action = None
         if msg == lhm.NO_PYTHONNET:
             action = self.install_deps
@@ -716,6 +717,7 @@ class MainWindow(WebManagementMixin, SettingsDialogMixin, CustomizeDialogMixin, 
             return
         self._device_notifications()
         self.web_bridge.drain(self._web_dispatch)
+        self._pairing_events()
         data = self.runtime.latest(self.collector, self.settings)
         if data and data["selection"] == (self.settings["gpu_id"], self.settings["nic_ids"]):
             self.data = data

@@ -12,11 +12,12 @@ def main(argv=None):
     # Legacy: the data endpoint is now a setting; this only migrates an old command line into it.
     parser.add_argument("--data-port", type=int, help=argparse.SUPPRESS)
     parser.add_argument("--nvidia", action="store_true", help="启用可选 NVIDIA 查询")
+    parser.add_argument("--mail-setup", action="store_true", help="交互式配置网页管理端配对码邮件后退出")
     parser.add_argument("--self-test", action="store_true", help=argparse.SUPPRESS)
     parser.add_argument("--autostart", action="store_true", help=argparse.SUPPRESS)
     # The windowed desktop build has no console to show argparse errors; ignore unknown flags there.
     args, unknown = parser.parse_known_args(argv)
-    if sys.platform == "linux" or args.headless or args.check:
+    if sys.platform == "linux" or args.headless or args.check or args.mail_setup:
         if unknown:
             parser.error("无法识别的参数: " + " ".join(unknown))
         if not 1 <= args.port <= 65535:

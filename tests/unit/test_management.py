@@ -2,17 +2,19 @@
 import copy
 import http.client
 import json
+from pathlib import Path
 import queue
 import socket
+import tempfile
 import threading
 import time
 import unittest
 from concurrent.futures import Future
 from unittest.mock import Mock, patch
 
-from hwmonitor import settings
+from hwmonitor import paths, settings
 from hwmonitor.core import management
-from hwmonitor.system import management_server, webserver
+from hwmonitor.system import auth, management_server, webserver
 from hwmonitor.system.webbridge import Bridge, WebError
 
 
@@ -145,7 +147,14 @@ class DisplayBoundTests(unittest.TestCase):
 
 class ServerTests(unittest.TestCase):
     def setUp(self):
+        self.temp = tempfile.TemporaryDirectory()
+        self.addCleanup(self.temp.cleanup)
+        data = patch.object(paths, "DATA", Path(self.temp.name))
+        data.start()
+        self.addCleanup(data.stop)
         self.server = management_server.ManagementServer()
+        with self.server.auth.lock:
+            self.token = self.server.auth._issue("测试设备", "127.0.0.1")
         self.port = free_port()
         self.server.bridge = Mock()
         self.server.bridge.call.side_effect = lambda action, payload=None: (
@@ -157,9 +166,11 @@ class ServerTests(unittest.TestCase):
     def tearDown(self):
         self.server.stop()
 
-    def request(self, method, path, payload=None, headers=None, raw=None):
+    def request(self, method, path, payload=None, headers=None, raw=None, login=True):
         connection = http.client.HTTPConnection("127.0.0.1", self.port, timeout=3)
         request_headers = {"Content-Type": "application/json", **(headers or {})}
+        if login:
+            request_headers.setdefault("Cookie", f"{auth.SESSION_COOKIE}={self.token}")
         body = json.dumps(payload).encode() if payload is not None else raw
         connection.request(method, path, body=body, headers=request_headers)
         response = connection.getresponse()
@@ -167,28 +178,92 @@ class ServerTests(unittest.TestCase):
         connection.close()
         return result
 
-    def test_lan_listener_and_routes_need_no_login(self):
+    def test_lan_listener_and_routes_require_pairing(self):
         self.assertEqual(self.server.server.server_address[0], "0.0.0.0")
-        for path in ("/api/state", "/api/settings", "/api/history", "/api/history.csv", "/api/hardware", "/api/diagnostics"):
+        routes = ("/api/state", "/api/settings", "/api/history", "/api/history.csv", "/api/hardware",
+                  "/api/diagnostics", "/api/auth/devices")
+        for path in routes:
             status, headers, _ = self.request("GET", path)
             self.assertEqual(status, 200, path)
             self.assertNotIn("Set-Cookie", headers)
+            self.assertEqual(self.request("GET", path, login=False)[0], 401, path)
+            forged = {"Cookie": f"{auth.SESSION_COOKIE}=forged-token-value"}
+            self.assertEqual(self.request("GET", path, headers=forged, login=False)[0], 401, path)
         self.assertEqual(self.request("POST", "/api/settings", {"changes":{}})[0], 200)
+        for path in ("/api/settings", "/api/auth/approve", "/api/auth/revoke", "/api/auth/logout"):
+            self.assertEqual(self.request("POST", path, {"changes":{}}, login=False)[0], 401, path)
+        self.assertEqual(json.loads(self.request("GET", "/api/state")[2])["pairing"], 0)
         for path in ("/", "/app.js", "/app.css", "/manifest.webmanifest", "/icon.svg", "/icon.png"):
-            status, headers, body = self.request("GET", path)
+            status, headers, body = self.request("GET", path, login=False)
             self.assertEqual(status, 200, path)
             self.assertNotIn("Access-Control-Allow-Origin", headers)
             self.assertIn("frame-ancestors 'none'", headers["Content-Security-Policy"])
             self.assertGreater(len(body), 0)
-        html = self.request("GET", "/")[2]
-        self.assertNotIn(b"login-form", html)
-        self.assertNotIn(b'id="app" hidden', html)
+        html = self.request("GET", "/", login=False)[2]
+        self.assertIn(b'id="captcha-form"', html)
+        self.assertIn(b'id="app" hidden', html)
 
-    def test_removed_auth_routes_and_cross_site_writes(self):
-        for path in ("/api/session", "/api/login", "/api/logout", "/data.json"):
+    def test_pairing_flow_over_http(self):
+        status, headers, body = self.request("GET", "/api/auth/status", login=False)
+        self.assertEqual(status, 200)
+        self.assertFalse(json.loads(body)["authenticated"])
+        cookie = headers["Set-Cookie"]
+        self.assertIn("HttpOnly", cookie)
+        self.assertIn("SameSite=Strict", cookie)
+        pair = cookie.split(";")[0]
+        status, headers, svg = self.request("GET", "/api/auth/captcha", headers={"Cookie": pair}, login=False)
+        self.assertEqual((status, headers["Content-Type"]), (200, "image/svg+xml"))
+        answer = self.server.auth.captchas[auth.digest(pair.split("=", 1)[1])][0]
+        self.assertNotIn(answer.encode(), svg)
+        self.assertEqual(self.request("POST", "/api/auth/request", {"captcha": answer},
+                                      {"Cookie": pair, "Origin": "http://evil.test"}, login=False)[0], 403)
+        with patch.object(auth.mailer, "load", return_value=dict(auth.mailer.DEFAULT)):
+            status, _, body = self.request("POST", "/api/auth/request", {"captcha": answer}, {"Cookie": pair}, login=False)
+        self.assertEqual(status, 200, body)
+        self.assertEqual(json.loads(body)["pending"]["mail"], "unconfigured")
+        # Signed-in devices see the code; the requester never receives it.
+        self.assertNotIn(self.server.auth.active()[0]["code"].encode(), body)
+        listed = json.loads(self.request("GET", "/api/auth/devices")[2])
+        self.assertEqual(len(listed["pending"]), 1)
+        self.assertEqual(json.loads(self.request("GET", "/api/state")[2])["pairing"], 1)
+        code = listed["pending"][0]["code"]
+        self.assertEqual(self.request("POST", "/api/auth/verify", {"code": code}, login=False)[0], 400)  # other browser
+        status, headers, _ = self.request("POST", "/api/auth/verify", {"code": code}, {"Cookie": pair}, login=False)
+        self.assertEqual(status, 200)
+        session = headers["Set-Cookie"].split(";")[0]
+        self.assertTrue(session.startswith(auth.SESSION_COOKIE + "="))
+        self.assertEqual(self.request("GET", "/api/state", headers={"Cookie": session}, login=False)[0], 200)
+        devices = json.loads(self.request("GET", "/api/auth/devices")[2])["devices"]
+        self.assertEqual(len(devices), 2)
+        self.assertNotIn(session.split("=", 1)[1], (Path(self.temp.name) / "management_devices.json").read_text(encoding="utf-8"))
+        status, headers, _ = self.request("POST", "/api/auth/logout", {}, {"Cookie": session}, login=False)
+        self.assertEqual(status, 200)
+        self.assertIn("Max-Age=0", headers["Set-Cookie"])
+        self.assertEqual(self.request("GET", "/api/state", headers={"Cookie": session}, login=False)[0], 401)
+
+    def test_approval_and_revocation_over_http(self):
+        pair = "p" * 32
+        with self.server.auth.lock:
+            self.server.auth.captchas[auth.digest(pair)] = ("23456", time.time() + 60)
+        with patch.object(auth.mailer, "load", return_value=dict(auth.mailer.DEFAULT)):
+            self.assertEqual(self.request("POST", "/api/auth/request", {"captcha": "23456"},
+                                          {"Cookie": f"{auth.PAIR_COOKIE}={pair}"}, login=False)[0], 200)
+        ident = self.server.auth.active()[0]["id"]
+        self.assertEqual(self.request("POST", "/api/auth/approve", {"id": ident})[0], 200)
+        self.assertEqual(self.request("POST", "/api/auth/approve", {"id": ident})[0], 404)
+        status, headers, body = self.request("GET", "/api/auth/status", headers={"Cookie": f"{auth.PAIR_COOKIE}={pair}"}, login=False)
+        self.assertTrue(json.loads(body)["authenticated"])
+        session = headers["Set-Cookie"].split(";")[0]
+        self.assertEqual(self.request("GET", "/api/state", headers={"Cookie": session}, login=False)[0], 200)
+        self.assertEqual(self.request("POST", "/api/auth/revoke", {"id": "others"})[0], 200)
+        self.assertEqual(self.request("GET", "/api/state", headers={"Cookie": session}, login=False)[0], 401)
+        self.assertEqual(self.request("GET", "/api/state")[0], 200)
+
+    def test_unknown_routes_and_cross_site_writes(self):
+        for path in ("/api/session", "/api/login", "/data.json"):
             self.assertEqual(self.request("GET", path)[0], 404)
-        for path in ("/api/login", "/api/logout"):
-            self.assertEqual(self.request("POST", path, {})[0], 404)
+        self.assertEqual(self.request("GET", "/data.json", login=False)[0], 404)
+        self.assertEqual(self.request("POST", "/api/login", {})[0], 404)
         self.assertEqual(self.request("POST", "/api/settings", {}, {"Origin":"http://evil.test"})[0], 403)
         self.assertEqual(self.request("POST", "/api/settings", {}, {"Sec-Fetch-Site":"cross-site"})[0], 403)
         self.assertEqual(self.request("POST", "/api/settings", {}, {"Origin":f"http://127.0.0.1:{self.port}"})[0], 200)

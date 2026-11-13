@@ -19,7 +19,7 @@ from hwmonitor.core import management
 from hwmonitor.sensors import reading
 from hwmonitor.sensors.linux import LinuxBackend
 from hwmonitor.server import Controller
-from hwmonitor.system import linux_credentials
+from hwmonitor.system import auth, linux_credentials
 from hwmonitor.system.webbridge import Bridge, WebError
 
 
@@ -144,9 +144,21 @@ class LinuxTests(unittest.TestCase):
                     time.sleep(.01)
                 port = controller.management.server.server_address[1]
                 self.assertEqual(controller.management.server.server_address[0], "127.0.0.1")
+                with controller.management.auth.lock:
+                    token = controller.management.auth._issue("test", "127.0.0.1")
+                headers = {"Content-Type": "application/json", "Cookie": f"{auth.SESSION_COOKIE}={token}"}
+                # Headless has no screen: a pairing code is written to the service log.
+                with self.assertLogs("hwmonitor.server", "WARNING") as logged:
+                    controller.management.auth.events.put(("pairing", {"code": "246810", "name": "iPhone", "ip": "192.168.1.9",
+                                                                       "mail": "unconfigured"}))
+                    deadline = time.monotonic() + 3
+                    while not controller.management.auth.events.empty() and time.monotonic() < deadline:
+                        time.sleep(.01)
+                    time.sleep(.1)
+                self.assertIn("246810", " ".join(logged.output))
                 def request(method, path, body=None):
                     conn = http.client.HTTPConnection("127.0.0.1", port, timeout=3)
-                    conn.request(method, path, json.dumps(body) if body else None, {"Content-Type": "application/json"})
+                    conn.request(method, path, json.dumps(body) if body else None, headers)
                     response = conn.getresponse()
                     raw = response.read()
                     conn.close()

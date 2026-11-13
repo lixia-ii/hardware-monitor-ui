@@ -19,11 +19,11 @@ ARGS_FILE="$STATE_DIR/arguments"
 STARTUP_LOG="$STATE_DIR/startup.log"
 ACTION=start
 case "${1:-}" in
-    start|stop|status|restart|logs) ACTION="$1"; shift ;;
+    start|stop|status|restart|logs|mail) ACTION="$1"; shift ;;
     --*|-h|'') ;;
-    *) echo "用法：sh start-linux.sh [start|stop|status|restart|logs] [服务参数]" >&2; exit 1 ;;
+    *) echo "用法：sh start-linux.sh [start|stop|status|restart|logs|mail] [服务参数]" >&2; exit 1 ;;
 esac
-if [[ "$ACTION" == stop || "$ACTION" == status || "$ACTION" == logs ]] && (( $# )); then
+if [[ "$ACTION" == stop || "$ACTION" == status || "$ACTION" == logs || "$ACTION" == mail ]] && (( $# )); then
     echo "$ACTION 不接受服务参数。" >&2
     exit 1
 fi
@@ -48,6 +48,13 @@ ensure_environment() {
         cp "$APP_DIR/pyproject.toml" "$DEPENDENCY_STAMP"
     fi
 }
+
+# Mail settings live in their own file; a running server reads them on the next pairing request.
+if [[ "$ACTION" == mail ]]; then
+    ensure_environment
+    umask 077
+    exec "$VENV_PYTHON" -m hwmonitor --mail-setup
+fi
 
 # Diagnostics/help remain foreground commands and do not affect a running server.
 for arg in "$@"; do

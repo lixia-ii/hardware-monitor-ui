@@ -13,6 +13,7 @@ from hwmonitor import paths, settings
 from hwmonitor.core.actions import ManagementActions
 from hwmonitor.core.collector import Collector
 from hwmonitor.core.runtime import RuntimeState
+from hwmonitor.system import auth
 from hwmonitor.system.management_server import ManagementServer
 from hwmonitor.system.webbridge import Bridge, WebError
 from hwmonitor.system.webserver import WebServer
@@ -86,6 +87,9 @@ class Controller(ManagementActions):
 
     def step(self):
         self.web_bridge.drain(self._web_dispatch)
+        for kind, info in self.management.auth.drain():
+            # Headless: the log is the local place to read a pairing code when mail is unavailable.
+            log.warning("%s", auth.describe(kind, info))
         data = self.state.latest(self.collector, self.settings)
         if data:
             self.data = data
@@ -148,7 +152,77 @@ class InstanceLock:
             stream.close()
 
 
+def typed(text):
+    """Apply Backspace/Delete a terminal passed through as characters (^H, ^?) and drop other control characters."""
+    out = []
+    for char in text:
+        if char in "\x08\x7f":
+            if out:
+                out.pop()
+        elif char.isprintable():
+            out.append(char)
+    return "".join(out).strip()
+
+
+def mail_setup():
+    """Interactive mail configuration; the running service reads it on the next pairing request."""
+    from getpass import getpass
+    from hwmonitor.system import credentials, mailer
+    try:
+        # Line editing for input(): without it a terminal sending ^H for Backspace echoes "^H",
+        # and arrow keys / pasted text are not handled.
+        import readline  # noqa: F401
+    except ImportError:
+        pass
+    os.umask(0o077)
+    paths.DATA.mkdir(mode=0o700, parents=True, exist_ok=True)
+    config = mailer.load()
+    print("配置网页管理端配对码邮件，直接回车保留方括号中的当前值。")
+    for key, title in (("smtp_host", "SMTP 服务器（如 smtp.qq.com）"), ("smtp_port", "端口（465 为 SSL）"),
+                       ("smtp_user", "账号"), ("mail_from", "发件地址"), ("mail_from_name", "发件人名称"),
+                       ("mail_to", "收件地址")):
+        while True:
+            value = typed(input(f"{title} [{config[key]}]: "))
+            if not value:
+                break
+            if key == "smtp_port":
+                if value.isdigit() and 1 <= int(value) <= 65535:
+                    config[key] = int(value)
+                    break
+                print("端口应为 1–65535 的整数")
+            elif key in ("mail_from", "mail_to", "smtp_user") and "@" not in value:
+                print("请输入有效的邮箱地址")
+            else:
+                config[key] = value
+                break
+    secret = typed(getpass("授权码（输入时不显示，" + ("回车保留原值" if config["smtp_pass_protected"] else "邮箱设置中生成") + "）: "))
+    if secret:
+        config["smtp_pass_protected"] = credentials.protect(secret)
+    mailer.save(config)
+    print(f"已保存到 {mailer.path()}")
+    if not mailer.configured(config):
+        print("配置尚不完整，配对码只会显示在日志和已登录设备的网页中。")
+        return 1
+    if input("发送测试邮件？[Y/n]: ").strip().lower() in ("", "y", "yes"):
+        try:
+            mailer.send(config, "[硬件监控] 测试邮件", "<p>邮件设置正确，网页管理端的配对码会发送到这个邮箱。</p>")
+        except Exception as error:
+            print(f"发送失败（{type(error).__name__}）：请检查服务器、端口、账号和授权码。", file=sys.stderr)
+            return 1
+        print(f"测试邮件已发送到 {config['mail_to']}")
+    return 0
+
+
 def main(args):
+    if args.mail_setup:
+        try:
+            return mail_setup()
+        except (EOFError, KeyboardInterrupt):
+            print("\n已取消，未保存修改。", file=sys.stderr)
+            return 1
+        except (OSError, ValueError) as error:
+            print(f"邮件设置保存失败：{error}", file=sys.stderr)
+            return 1
     if args.check:
         result = {"platform": sys.platform, "python": sys.version.split()[0], "mode": "headless",
                   "dependencies": {name: importlib.util.find_spec(name) is not None for name in ("psutil", "cryptography")}}

@@ -1,7 +1,8 @@
-"""设置窗口: 左侧导航 + 设置行 (常规、监控、告警、设备、数据与关于), 修改即时生效并保存。"""
+"""设置窗口: 左侧导航 + 设置行 (常规、监控、告警、设备、网页登录、数据与关于), 修改即时生效并保存。"""
 import copy
 import logging
 import os
+import time
 import tkinter as tk
 from uuid import uuid4
 from tkinter import ttk, filedialog
@@ -9,7 +10,8 @@ from tkinter import ttk, filedialog
 from hwmonitor import __version__, paths, settings
 from hwmonitor.core import diagnostics
 from hwmonitor.sensors import hwinfo
-from hwmonitor.system import autostart, credentials
+from hwmonitor.system import autostart, credentials, mailer
+from hwmonitor.system.webbridge import WebError
 from hwmonitor.system.webserver import lan_addresses
 from hwmonitor.ui.theme import ACCENT, BG, BORDER, CARD, FG, FONT, MUTED, NAV_HOVER, RED, SUB
 
@@ -21,7 +23,8 @@ class SettingsDialogMixin:
 
     # 设置窗口左侧导航: (键, 标题, Segoe MDL2 Assets 图标)
     SETTINGS_PAGES = (("general", "常规", "\ue713"), ("monitor", "监控", "\ue9d9"), ("alerts", "告警", "\uea8f"),
-                      ("router", "设备", "\ue968"), ("data", "数据与关于", "\ue946"))
+                      ("router", "设备", "\ue968"), ("access", "网页登录", "\ue72e"),
+                      ("data", "数据与关于", "\ue946"))
 
     def show_settings(self, page=None):
         """设置窗口 (参考 Windows 11 设置): 左侧导航切换页面, 每项设置一行, 左边标题和说明、右边控件,
@@ -50,7 +53,7 @@ class SettingsDialogMixin:
         from tkinter import font
         icon_font = ("Segoe MDL2 Assets", 10) if "Segoe MDL2 Assets" in font.families(w) else None
         builders = {"general": self._general_page, "monitor": self._monitor_page, "alerts": self._alerts_page,
-                    "router": self._router_page, "data": self._data_page}
+                    "router": self._router_page, "access": self._access_page, "data": self._data_page}
         self.settings_pages, self._settings_nav = {}, {}
         for key, title, icon in self.SETTINGS_PAGES:
             self._settings_nav[key] = self._nav_item(nav, key, title, icon if icon_font else None, icon_font)
@@ -345,11 +348,112 @@ class SettingsDialogMixin:
                 return
             self._save_option("management", current)
             refresh(self.management.error)
-        row = self._row(group, "启用网页管理端", "默认端口 7076，启用后同一局域网的设备可直接访问")
+        row = self._row(group, "启用网页管理端", "默认端口 7076，同一局域网的设备打开后需配对登录（见「网页登录」）")
         self._switch(row, cfg["enabled"], lambda on: save(enabled=on))
         row = self._row(group, "管理端口", "1024–65535，与传感器数据接口端口独立")
         self._number(row, cfg["port"], 1024, 65535, "", lambda v: save(port=v))
         refresh(self.management.error)
+
+    def _access_page(self, page):
+        """网页管理端登录: 发送配对码的邮箱 (只能在电脑端修改) 和已登录的设备。"""
+        group = self._group(page, "配对码邮件")
+        config = mailer.load()
+        fields = (("smtp_host", "SMTP 服务器", "例如 smtp.qq.com、smtp.exmail.qq.com"),
+                  ("smtp_port", "端口", "465 使用 SSL；其他端口使用 STARTTLS"),
+                  ("smtp_user", "账号", "登录 SMTP 的邮箱账号"),
+                  ("smtp_pass", "授权码", "在邮箱设置中开启 SMTP 后生成，不是邮箱登录密码"),
+                  ("mail_from", "发件地址", "通常与账号相同"),
+                  ("mail_from_name", "发件人名称", ""),
+                  ("mail_to", "收件地址", "配对码发到这个邮箱；网页端不能修改"))
+        variables, rows = {}, {}
+        for key, title, desc in fields:
+            rows[key] = row = self._row(group, title, desc)
+            variables[key] = tk.StringVar(value="" if key == "smtp_pass" else str(config[key]))
+            ttk.Entry(row.control, textvariable=variables[key], width=24, style="Card.TEntry",
+                      **({"show": "●"} if key == "smtp_pass" else {})).pack(fill="x")
+        def pass_hint(saved):
+            self._row_message(rows["smtp_pass"], "已加密保存 · 留空保留原授权码" if saved else None)
+        pass_hint(bool(config["smtp_pass_protected"]))
+        status = self._row(group, "邮件状态", "")
+        def describe(current):
+            if mailer.configured(current):
+                return f"已配置，配对码将发送到 {current['mail_to']}"
+            return "未配置：配对码只显示在电脑主界面和已登录设备的网页中"
+        self._row_message(status, describe(config))
+        def collect():
+            values = {k: v.get().strip() for k, v in variables.items()}
+            port = values.pop("smtp_port")
+            if not port.isdigit() or not 1 <= int(port) <= 65535:
+                raise ValueError("端口应为 1–65535 的整数")
+            secret = values.pop("smtp_pass")
+            if any(values[k] and "@" not in values[k] for k in ("mail_from", "mail_to")):
+                raise ValueError("请输入有效的邮箱地址")
+            protected = credentials.protect(secret) if secret else mailer.load()["smtp_pass_protected"]
+            return mailer.validate({**values, "smtp_port": int(port), "smtp_pass_protected": protected})
+        def save():
+            try:
+                candidate = collect()
+                mailer.save(candidate)
+            except (OSError, ValueError, UnicodeError) as error:
+                self._row_message(status, str(error) if isinstance(error, ValueError) and str(error)
+                                  else "邮件设置保存失败，请重试。", error=True)
+                return None
+            variables["smtp_pass"].set("")
+            pass_hint(bool(candidate["smtp_pass_protected"]))
+            self._row_message(status, "已保存。" + describe(candidate))
+            return candidate
+        def test():
+            candidate = save()
+            if candidate is None:
+                return
+            if not mailer.configured(candidate):
+                self._row_message(status, "请先填写完整的服务器、账号、授权码、发件和收件地址。", error=True)
+                return
+            test_button.state(["disabled"])
+            self._row_message(status, "正在发送测试邮件…")
+            def job():
+                try:
+                    mailer.send(candidate, "[硬件监控] 测试邮件", "<p>邮件设置正确，网页管理端的配对码会发送到这个邮箱。</p>")
+                    return True
+                except Exception:
+                    logging.getLogger(__name__).exception("Test mail failed")
+                    return False
+            def done(ok):
+                test_button.state(["!disabled"])
+                self._row_message(status, f"测试邮件已发送到 {candidate['mail_to']}，请查收。" if ok
+                                  else "发送失败：请检查服务器、端口、账号和授权码，详见本地日志。", error=not ok)
+            self._background(status, job, done)
+        ttk.Button(status.control, text="保存", style="Accent.TButton", command=save).pack(side="left")
+        test_button = ttk.Button(status.control, text="发送测试邮件", style="Card.TButton", command=test)
+        test_button.pack(side="left", padx=("6p", 0))
+
+        group = self._group(page, "已登录的设备")
+        box = tk.Frame(group, bg=BG)
+        box.pack(fill="x")
+        def refresh():
+            for child in box.winfo_children():
+                child.destroy()
+            devices = self.management.auth.devices(None)
+            if not devices:
+                self._row(box, "暂无已登录的设备", "手机打开管理地址，输入图形验证码后获取配对码即可登录")
+            for device in devices:
+                seen = time.strftime("%Y-%m-%d %H:%M", time.localtime(device["last_seen"]))
+                row = self._row(box, device["name"] or "未知设备", f"{device['ip']} · 最近使用 {seen}")
+                ttk.Button(row.control, text="移除", style="Card.TButton",
+                           command=lambda ident=device["id"]: remove(ident)).pack()
+            row = self._row(box, "移除后需要重新配对", "怀疑手机丢失或被他人使用时，可以全部移除")
+            remove_all = ttk.Button(row.control, text="全部移除", style="Card.TButton", command=lambda: remove("others"))
+            remove_all.pack(side="left")
+            ttk.Button(row.control, text="刷新", style="Card.TButton", command=refresh).pack(side="left", padx=("6p", 0))
+            if not devices:
+                remove_all.state(["disabled"])
+        def remove(ident):
+            try:
+                self.management.auth.revoke(ident, None)
+            except WebError as error:
+                self._flash(str(error))
+            refresh()
+        refresh()
 
     def _monitor_page(self, page):
         group = self._group(page, "采集")

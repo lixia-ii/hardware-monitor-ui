@@ -13,6 +13,7 @@ const labels = {cpu_temp:"CPU 温度",gpu_temp:"显卡温度",cpu_load:"CPU 利�
 let snapshot = null, state = null, page = "overview", tab = "monitor", dirty = false, active = false;
 let historyData = null, hours = 1, chartInterval = "auto", chartGpu = "", lastHistory = 0;
 let hardware = null, editorDevice = null, editingRevision = null, polling = false, toastTimer;
+let access = null, loginTimer = null;
 
 async function api(path, body) {
   const options = {cache:"no-store", headers:{}, signal:AbortSignal.timeout(15000)};
@@ -20,6 +21,8 @@ async function api(path, body) {
   const response = await fetch(path, options);
   const result = await response.json();
   if (!response.ok) {
+    // Signed out elsewhere (removed on the computer or another device): back to pairing.
+    if (response.status === 401 && active) showLogin(null);
     const error = new Error(result.error || "请求失败"); error.status = response.status; throw error;
   }
   return result;
@@ -111,7 +114,7 @@ function dataApiRows(w, desktop) {
 }
 function renderSettings() {
   const s = snapshot.settings;
-  const tabs = {monitor:"监控",alerts:"告警",floating:"悬浮窗",display:"显示",general:"常规"};
+  const tabs = {monitor:"监控",alerts:"告警",floating:"悬浮窗",display:"显示",general:"常规",access:"登录设备"};
   const desktop = snapshot?.capabilities?.desktop !== false;
   if (!desktop) { delete tabs.floating; if (tab === "floating") tab = "monitor"; }
   let body = "";
@@ -135,8 +138,19 @@ function renderSettings() {
     body=dataApiRows(s.web,desktop)+inputRow("电脑主窗口置顶","topmost",s.topmost,{type:"checkbox"})+inputRow("关闭电脑主窗口时","close_action",s.close_action,{choices:[["ask","每次询问"],["tray","最小化到托盘"],["exit","退出软件"]]})+inputRow("保存历史到电脑","history_enabled",s.history_enabled,{type:"checkbox",description:"关闭后仍保留本次运行的内存历史"})+`<div class="notice">管理端的端口和开关在电脑端配置。开机启动及驱动安装请在电脑端操作。</div>${kv("当前管理地址",location.origin)}${kv("连接协议",location.protocol.replace(":", "").toUpperCase())}`;
   }
   if (!desktop && tab === "general") body=dataApiRows(s.web,desktop)+inputRow("保存历史到服务器","history_enabled",s.history_enabled,{type:"checkbox",description:"关闭后仍保留本次运行的内存历史"})+`<div class="notice">管理端的监听地址、端口和自启动通过服务器命令行或 systemd 配置。</div>${kv("当前管理地址",location.origin)}`;
-  $("#content").innerHTML=`<div class="tabs" role="tablist">${Object.entries(tabs).map(([id,label])=>`<button role="tab" aria-selected="${tab===id}" class="${tab===id?"selected":""}" data-tab="${id}">${label}</button>`).join("")}</div><form id="settings-form"><div class="card">${body}</div><div class="form-actions"><p class="muted" id="save-description">修改后保存并应用</p><button type="button" data-action="reload-settings">重新载入</button><button type="submit" class="primary">保存设置</button></div><p id="settings-error" class="error" role="alert"></p></form>`;
+  const tabBar=`<div class="tabs" role="tablist">${Object.entries(tabs).map(([id,label])=>`<button role="tab" aria-selected="${tab===id}" class="${tab===id?"selected":""}" data-tab="${id}">${label}</button>`).join("")}</div>`;
+  if (tab === "access") {$("#content").innerHTML=tabBar+accessMarkup(desktop); return;}
+  $("#content").innerHTML=`${tabBar}<form id="settings-form"><div class="card">${body}</div><div class="form-actions"><p class="muted" id="save-description">修改后保存并应用</p><button type="button" data-action="reload-settings">重新载入</button><button type="submit" class="primary">保存设置</button></div><p id="settings-error" class="error" role="alert"></p></form>`;
 }
+function ago(t) {const m=Math.max(0,Math.round((Date.now()/1000-t)/60)); return m<1?"刚刚":m<60?`${m} 分钟前`:m<1440?`${Math.round(m/60)} 小时前`:`${Math.round(m/1440)} 天前`;}
+function accessMarkup(desktop) {
+  if (!access) return '<div class="card empty">正在载入…</div>';
+  const now=Date.now()/1000, where=desktop?"电脑端「设置 → 网页登录」":"服务器上运行 sh start-linux.sh mail ";
+  const pending=access.pending.length?access.pending.map(p=>`<div class="access-row"><div><span class="pairing-code">${esc(p.code)}</span><small>${esc(p.name)} · ${esc(p.ip)} · ${Math.max(1,Math.ceil((p.expires-now)/60))} 分钟内有效</small></div><div class="actions"><button data-action="reject" data-id="${esc(p.id)}">拒绝</button><button class="primary" data-action="approve" data-id="${esc(p.id)}">批准登录</button></div></div>`).join(""):'<div class="empty">暂无待处理的配对请求</div>';
+  const devices=access.devices.map(d=>`<div class="access-row"><div>${esc(d.name||"未知设备")}${d.current?' <span class="badge">本设备</span>':""}<small>${esc(d.ip)} · 最近使用 ${esc(ago(d.last_seen))} · 配对于 ${esc(new Date(d.created*1000).toLocaleDateString("zh-CN"))}</small></div><div class="actions">${d.current?'<button data-action="logout">退出登录</button>':`<button class="danger" data-action="revoke" data-id="${esc(d.id)}">移除</button>`}</div></div>`).join("");
+  return `<div class="stack"><article class="card"><div class="section-title"><h2>待处理的配对请求</h2><span class="muted">确认是你本人的设备后再批准</span></div>${pending}</article><article class="card"><div class="section-title"><h2>已登录的设备</h2><button class="quiet danger" data-action="revoke-others" ${access.devices.length>1?"":"disabled"}>移除其他设备</button></div>${devices}</article><article class="card">${kv("配对码邮件",access.mail.configured?"发送到 "+access.mail.to:"未配置")}<p class="muted">邮件地址只能在${esc(where)}修改，网页端不能更改。移除的设备需要重新配对。</p></article></div>`;
+}
+async function loadAccess() {access=await api("/api/auth/devices"); if(page==="settings"&&tab==="access") renderSettings();}
 function formChanges(form) {
   const changes = {}, s=snapshot.settings;
   if (tab === "display") {
@@ -232,7 +246,9 @@ async function poll() {
       if(dirty || $("#device-dialog").open) notice("电脑端或其他页面已修改设置。请先重新载入，避免覆盖新的修改。");
       else {snapshot=await api("/api/settings"); if(page==="settings") renderSettings();}
     }
-    if(!dirty && !$("#device-dialog").open) notice(state.data?.error || state.storage_error || (stale?"采集尚未就绪，当前可能显示上次读数。":""));
+    const pairing=state.pairing?`有 ${state.pairing} 个设备正在申请登录，可在「设置 → 登录设备」查看配对码或批准。`:"";
+    if(!dirty && !$("#device-dialog").open) notice(pairing || state.data?.error || state.storage_error || (stale?"采集尚未就绪，当前可能显示上次读数。":""));
+    if(page==="settings" && tab==="access") await loadAccess();
     if(["overview","devices"].includes(page)) renderPage();
     if(page==="history" && Date.now()-lastHistory>15000) await loadHistory();
     if(page==="info") {if(hardware?.loading) hardware=await api("/api/hardware"); renderPage();}
@@ -244,7 +260,7 @@ document.addEventListener("click", async event=>{
   const nav=event.target.closest('a[href^="#"]');
   if(nav && active) {event.preventDefault();await navigate(nav.hash.slice(1));return;}
   const t=event.target.closest("[data-tab]");
-  if(t) {if(dirty&&!confirm("放弃未保存的修改并切换设置？"))return;dirty=false;tab=t.dataset.tab;renderSettings();return;}
+  if(t) {if(dirty&&!confirm("放弃未保存的修改并切换设置？"))return;dirty=false;tab=t.dataset.tab;renderSettings();if(tab==="access")try{await loadAccess();}catch(error){notice(error.message);}return;}
   const b=event.target.closest("[data-action]"); if(!b)return;
   try {
     switch(b.dataset.action) {
@@ -254,6 +270,10 @@ document.addEventListener("click", async event=>{
       case "toggle-device": {b.disabled=true; const routers=clone(snapshot.settings.routers); const d=routers.find(x=>x.id===b.dataset.id);d.enabled=!d.enabled;await saveChanges({routers});renderDevices();break;}
       case "reload-settings": if(!dirty||confirm("放弃修改并重新载入设置？")){snapshot=await api("/api/settings");dirty=false;notice("");renderSettings();}break;
       case "refresh-info": hardware=await api("/api/hardware?refresh=1");renderInfo();break;
+      case "approve": case "reject": b.disabled=true; await api(`/api/auth/${b.dataset.action}`,{id:b.dataset.id}); toast(b.dataset.action==="approve"?"已批准，对方页面会自动登录":"已拒绝该请求"); await loadAccess(); break;
+      case "revoke": if(confirm("移除该设备？它需要重新配对才能访问。")){b.disabled=true;await api("/api/auth/revoke",{id:b.dataset.id});await loadAccess();} break;
+      case "revoke-others": if(confirm("移除除本设备外的所有设备？")){b.disabled=true;await api("/api/auth/revoke",{id:"others"});toast("已移除其他设备");await loadAccess();} break;
+      case "logout": if(confirm("退出登录？再次访问需要重新配对。")){await api("/api/auth/logout",{});showLogin(null);} break;
       case "diagnostics": {const data=await api("/api/diagnostics");const url=URL.createObjectURL(new Blob([JSON.stringify(data,null,2)],{type:"application/json"}));const a=document.createElement("a");a.href=url;a.download="hardware-diagnostics.json";a.click();setTimeout(()=>URL.revokeObjectURL(url),10000);break;}
     }
   } catch(error) {notice(error.message);b.disabled=false;}
@@ -297,8 +317,63 @@ $("#content").addEventListener("pointermove",event=>{
 });
 window.addEventListener("hashchange",()=>{if(active)navigate(location.hash.slice(1));});
 window.addEventListener("beforeunload",event=>{if(dirty){event.preventDefault();event.returnValue="";}});
-async function connect() {
+function loginError(message = "") {$("#login-error").textContent = message;}
+function refreshCaptcha() {$("#captcha").src = "/api/auth/captcha?t=" + Date.now(); $("#captcha-input").value = "";}
+function showLogin(status) {
+  active = false; access = null; dirty = false;
+  if ($("#device-dialog").open) $("#device-dialog").close();
+  $("#app").hidden = true; $("#login").hidden = false;
+  if (status?.pending) codeStep(status.pending); else captchaStep();
+}
+function captchaStep(message = "") {
+  clearTimeout(loginTimer);
+  $("#captcha-form").hidden = false; $("#code-form").hidden = true;
+  refreshCaptcha(); loginError(message);
+}
+function codeStep(pending) {
+  $("#captcha-form").hidden = true; $("#code-form").hidden = false;
+  const local = "也可以在电脑主界面（服务器为日志）查看，或在已登录的设备上批准。";
+  $("#code-hint").textContent = ({sending:"正在发送到你的邮箱，10 分钟内有效。",sent:"已发送到你的邮箱，10 分钟内有效。",failed:"邮件发送失败。",unconfigured:"未配置邮件。"}[pending.mail] || "") + local;
+  clearTimeout(loginTimer); loginTimer = setTimeout(checkPairing, 3000);
+}
+async function checkPairing() {
+  try {
+    const status = await api("/api/auth/status");
+    if (status.authenticated) return enter();
+    if (!status.pending) return captchaStep("配对码已过期，请重新获取。");
+    codeStep(status.pending);
+  } catch {loginTimer = setTimeout(checkPairing, 5000);}
+}
+async function enter() {
+  clearTimeout(loginTimer); loginError("");
+  $("#login").hidden = true; $("#app").hidden = false;
   try {await start();}
   catch {notice("无法连接管理服务，请检查地址和电脑端运行状态。正在重试…"); setTimeout(connect, 5000);}
+}
+$("#captcha").addEventListener("click", refreshCaptcha);
+$("#restart-login").addEventListener("click", () => captchaStep());
+$("#captcha-form").addEventListener("submit", async event => {
+  event.preventDefault(); const button = $("[type=submit]", event.target); button.disabled = true;
+  try {const result = await api("/api/auth/request", {captcha: $("#captcha-input").value.trim()}); loginError(""); $("#code-input").value = ""; codeStep(result.pending); $("#code-input").focus();}
+  catch (error) {refreshCaptcha(); loginError(error.message);}
+  finally {button.disabled = false;}
+});
+$("#code-form").addEventListener("submit", async event => {
+  event.preventDefault(); const button = $("[type=submit]", event.target); button.disabled = true;
+  try {await api("/api/auth/verify", {code: $("#code-input").value.trim()});}
+  catch (error) {
+    $("#code-input").value = "";
+    // A used-up or expired code cannot be retried: start over with a new captcha.
+    try {const status = await api("/api/auth/status"); if (!status.pending) captchaStep(error.message); else loginError(error.message);}
+    catch {loginError(error.message);}
+    return;
+  } finally {button.disabled = false;}
+  await enter();
+});
+async function connect() {
+  try {
+    const status = await api("/api/auth/status");
+    if (status.authenticated) await enter(); else showLogin(status);
+  } catch {$("#login").hidden = true; $("#app").hidden = false; notice("无法连接管理服务，请检查地址和电脑端运行状态。正在重试…"); setTimeout(connect, 5000);}
 }
 connect();

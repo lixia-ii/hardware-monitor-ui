@@ -1,4 +1,5 @@
 """Real Linux startup without a display; verifies signal exit and persistence."""
+import hashlib
 import http.client
 import json
 import os
@@ -11,12 +12,24 @@ import tempfile
 import time
 
 
-def request(port, path):
+TOKEN = "smoke-session-token-0123456789abcdef"
+
+
+def seed_device(directory):
+    """Pre-pair one browser: the service only answers signed-in devices."""
+    directory.mkdir(parents=True, exist_ok=True)
+    now = time.time()
+    device = {"id": "smoke", "hash": hashlib.sha256(TOKEN.encode()).hexdigest(), "name": "smoke",
+              "ip": "127.0.0.1", "created": now, "last_seen": now}
+    (directory / "management_devices.json").write_text(json.dumps({"devices": [device]}), encoding="utf-8")
+
+
+def request(port, path, expected=200):
     conn = http.client.HTTPConnection("127.0.0.1", port, timeout=2)
     try:
-        conn.request("GET", path)
+        conn.request("GET", path, headers={"Cookie": f"hm_session={TOKEN}"} if expected == 200 else {})
         response = conn.getresponse()
-        assert response.status == 200, response.status
+        assert response.status == expected, response.status
         return response.read()
     finally:
         conn.close()
@@ -30,6 +43,7 @@ with tempfile.TemporaryDirectory() as directory:
     # A missing tkinter package or DISPLAY must not affect imports/startup.
     subprocess.run([sys.executable, "-c", "import sys; sys.modules['tkinter']=None; from hwmonitor.bootstrap import main; main(['--check'])"], env=env, check=True)
     assert not list(Path(directory).iterdir()), "--check wrote persistent state"
+    seed_device(Path(directory))
     ports = []
     for _ in range(2):
         with socket.socket() as probe:
@@ -53,6 +67,7 @@ with tempfile.TemporaryDirectory() as directory:
                     raise AssertionError("No usable samples within 15 seconds")
                 time.sleep(.1)
             assert state["mode"] == "headless"
+            request(ports[0], "/api/state", expected=401)
             assert state["data"]["mem_total"] > 0
             tree = json.loads(request(ports[1], "/data.json"))
             assert tree["Children"]

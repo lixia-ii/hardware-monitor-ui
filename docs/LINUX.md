@@ -64,7 +64,7 @@ sudo journalctl -u hwmonitor -n 50
 HWMONITOR_ARGS="--host=192.168.1.10 --port=7076 --nvidia"
 ```
 
-程序不自动修改 Linux 防火墙。需要时自行限定来源，例如 `sudo ufw allow from 192.168.1.0/24 to any port 7076 proto tcp`。管理服务目前没有登录认证，只用于本机或可信内网；不直接暴露公网。Host/同源校验仅允许 IP 或 localhost。
+程序不自动修改 Linux 防火墙。需要时自行限定来源，例如 `sudo ufw allow from 192.168.1.0/24 to any port 7076 proto tcp`。网页需要配对登录：页面输入图形验证码后生成配对码，写入服务日志（`sh start-linux.sh logs` 或 `journalctl -u hwmonitor`），配置邮件后同时发到邮箱，也可在已登录设备的 **设置 → 登录设备** 中批准。邮件通过 `sh start-linux.sh mail`（或 `python -m hwmonitor --mail-setup`）交互式配置，保存在数据目录的 `mail.json`，授权码加密保存，运行中的服务在下次申请时读取，无需重启；网页端不能修改。已登录设备保存在 `management_devices.json`（只存令牌哈希）。管理服务使用 HTTP 明文，只用于本机或可信内网；不直接暴露公网。Host/同源校验仅允许 IP 或 localhost。
 
 停止/重启：`sudo systemctl stop hwmonitor` / `sudo systemctl restart hwmonitor`。启动冲突和目录不可写会以非零状态退出；配置损坏时记录日志并使用默认设置启动。SIGTERM/SIGINT 停止管理修改并清理采集与服务，systemd 对超过 15 秒的进程执行最终回收。
 

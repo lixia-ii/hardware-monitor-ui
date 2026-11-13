@@ -2,7 +2,7 @@
 import sys
 import tkinter as tk
 
-from hwmonitor.system import management_server
+from hwmonitor.system import auth, management_server
 from hwmonitor.system.webbridge import WebError
 from hwmonitor.core.actions import ManagementActions
 from hwmonitor.ui.settings_dialog import INPUTS
@@ -25,6 +25,17 @@ class WebManagementMixin(ManagementActions):
         self._management_firewall = port
         return error
 
+    def _pairing_events(self):
+        """配对码显示在主界面提示条 (有效期内常驻) 并弹出托盘提醒; 新设备登录时短暂提示。"""
+        for kind, info in self.management.auth.drain():
+            message = auth.describe(kind, info)
+            if kind == "paired" or not self.tray.notify("网页管理端", message, warning=kind == "mail_failed"):
+                self._flash(message)
+        text = "\n".join(auth.describe("pairing", item) for item in self.management.auth.active())
+        if text != self._pairing_notice:
+            self._pairing_notice = text
+            self._notice((self.data or {}).get("error"))
+
     def _web_flush_editors(self):
         """Desktop edits win: commit a field still being typed in (it saves on
         <FocusOut>, which then turns this web save into a revision conflict) and
@@ -46,7 +57,7 @@ class WebManagementMixin(ManagementActions):
                 widget = pending.pop()
                 pending.extend(widget.winfo_children())
                 if widget.winfo_class() in ("TEntry", "Entry") and widget.cget("show") and widget.get():
-                    raise WebError(409, "电脑端有尚未保存的设备密码，请在电脑上点击「保存并连接」或清空后再试")
+                    raise WebError(409, "电脑端有尚未保存的密码或授权码，请在电脑上保存或清空后再试")
 
     def _commit_candidate(self, candidate):
         previous = self.settings

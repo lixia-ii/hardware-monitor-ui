@@ -15,7 +15,26 @@
   <script src="/app.js" defer></script>
 </head>
 <body>
-  <div id="app">
+  <section id="login" class="login" hidden>
+    <div class="login-card">
+      <div class="brand"><img src="/icon.svg" alt="" width="36" height="36"><span>硬件监控<small>管理中心</small></span></div>
+      <h1>登录管理中心</h1>
+      <p class="muted">首次在此设备访问需要配对。配对码会发送到电脑端设置的邮箱，同时显示在电脑主界面或服务器日志中。</p>
+      <form id="captcha-form" autocomplete="off">
+        <label for="captcha-input">图形验证码<small>看不清可点击图片换一张</small></label>
+        <div class="captcha-row"><img id="captcha" alt="图形验证码，点击刷新" width="160" height="56"><input id="captcha-input" inputmode="numeric" maxlength="5" required></div>
+        <button type="submit" class="primary">获取配对码</button>
+      </form>
+      <form id="code-form" autocomplete="off" hidden>
+        <label for="code-input">配对码<small id="code-hint"></small></label>
+        <input id="code-input" inputmode="numeric" autocomplete="one-time-code" maxlength="6" pattern="[0-9]{6}" required>
+        <button type="submit" class="primary">登录</button>
+        <button type="button" class="quiet" id="restart-login">重新获取配对码</button>
+      </form>
+      <p id="login-error" class="error" role="alert"></p>
+    </div>
+  </section>
+  <div id="app" hidden>
     <aside class="sidebar">
       <a class="brand" href="#overview"><img src="/icon.svg" alt="" width="36" height="36"><span>硬件监控<small>管理中心</small></span></a>
       <p class="nav-label">工作空间</p>
