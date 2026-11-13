@@ -41,7 +41,7 @@ paths / settings: 各层共用的基础模块
 | `system/pawnio.py` | PawnIO 驱动检测与安装 |
 | `system/webserver.py` | 兼容 `/data.json` 的传感器数据接口、局域网防火墙规则、本机地址 |
 | `system/management_server.py` / `webbridge.py` | 独立局域网手机管理服务（默认 7076）：HTTP、固定开放局域网、独立防火墙规则、HTTP 与 Tk 主线程之间的有界 RPC 队列 |
-| `system/auth.py` / `captcha.py` / `mailer.py` | 管理端登录：图形验证码（纯 SVG 路径）→ 配对码（邮件 + 本机显示 + 已登录设备批准）→ 长期设备令牌（仅存哈希，`management_devices.json`）；全局发信限流；SMTP 配置独立保存在 `mail.json`，网页不可修改 |
+| `system/auth.py` / `captcha.py` / `mailer.py` | 管理端登录：图形验证码（标准库生成 PNG）→ 配对码（邮件 + 本机显示 + 已登录设备批准）→ 长期设备令牌（仅存哈希，`management_devices.json`）；来源 IP 限流与全局发信限流；设备增删先持久化再更新内存；SMTP 配置独立保存在 `mail.json`，网页不可修改 |
 | `system/web/` | 自包含手机网页、样式、脚本、主屏幕图标与 Web App manifest；不依赖 CDN |
 | `core/management.py` | 对外配置投影、密码隐藏、严格更新校验和版本冲突检测 |
 | `ui/web_management.py` | 在 Tk 主线程读取状态与历史、保存并应用网页设置；硬件概览后台读取 |

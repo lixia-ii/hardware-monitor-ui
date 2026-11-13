@@ -2,9 +2,11 @@
 import json
 from pathlib import Path
 import smtplib
+import struct
 import tempfile
 import threading
 import unittest
+import zlib
 from unittest.mock import Mock, patch
 
 from hwmonitor import paths
@@ -39,19 +41,19 @@ class AuthTests(unittest.TestCase):
         self.auth = auth.Auth(load_mail=lambda: dict(MAIL), send_mail=send, clock=self.clock)
 
     def ask(self, pair="pair-a", agent="Mozilla/5.0 (iPhone; CPU iPhone OS 18_0) AppleWebKit/605 Version/18.0 Mobile Safari/604.1"):
-        self.auth.new_captcha(pair)
+        self.auth.new_captcha(pair, "192.168.1.9")
         answer = self.auth.captchas[auth.digest(pair)][0]
         return self.auth.request(pair, answer.lower(), "192.168.1.9", agent)
 
     def test_captcha_is_single_use_and_expires(self):
-        self.auth.new_captcha("pair-a")
+        self.auth.new_captcha("pair-a", "ip")
         with self.assertRaises(WebError) as wrong:
             self.auth.request("pair-a", "00000", "ip", "")
         self.assertIn("验证码错误", str(wrong.exception))
         with self.assertRaises(WebError) as gone:
             self.auth.request("pair-a", "00000", "ip", "")
         self.assertIn("过期", str(gone.exception))
-        self.auth.new_captcha("pair-a")
+        self.auth.new_captcha("pair-a", "ip")
         answer = self.auth.captchas[auth.digest("pair-a")][0]
         self.clock.now += auth.CAPTCHA_TTL + 1
         with self.assertRaises(WebError):
@@ -104,6 +106,79 @@ class AuthTests(unittest.TestCase):
         self.assertIn("分钟", str(hourly.exception))
         self.clock.now += 3600
         self.ask("pair-y")
+
+    def test_captcha_refresh_limit_per_browser_and_shared_address(self):
+        with patch.object(captcha, "png", return_value=b"png"):
+            for _ in range(auth.CAPTCHA_LIMIT):
+                self.auth.new_captcha("busy", "ip-a")
+            with self.assertRaises(WebError) as error:
+                self.auth.new_captcha("busy", "ip-a")
+            self.assertEqual(error.exception.status, 429)
+            # Another browser behind the same address (NAT, localhost) still gets captchas.
+            self.auth.new_captcha("neighbour", "ip-a")
+            # Rotating the cookie only reaches the address-wide bound.
+            for index in range(auth.CAPTCHA_LIMIT * (auth.SHARED_SOURCES - 1) - 1):
+                self.auth.new_captcha(f"pair-{index}", "ip-a")
+            with self.assertRaises(WebError):
+                self.auth.new_captcha("another-cookie", "ip-a")
+            self.auth.new_captcha("other-browser", "ip-b")
+            self.clock.now += auth.SOURCE_WINDOW
+            self.auth.new_captcha("another-cookie", "ip-a")
+
+    def test_refused_captcha_refresh_keeps_the_current_one(self):
+        with patch.object(captcha, "png", return_value=b"png"):
+            for _ in range(auth.CAPTCHA_LIMIT):
+                self.auth.new_captcha("pair-a", "ip")
+            answer = self.auth.captchas[auth.digest("pair-a")][0]
+            with self.assertRaises(WebError):
+                self.auth.new_captcha("pair-a", "ip")
+        self.auth.request("pair-a", answer, "ip", "")
+
+    def test_failed_pairing_submissions_are_limited_by_source(self):
+        for _ in range(auth.REQUEST_LIMIT):
+            with self.assertRaises(WebError) as error:
+                self.auth.request("pair-a", "wrong", "ip-a", "")
+            self.assertEqual(error.exception.status, 400)
+        with self.assertRaises(WebError) as error:
+            self.auth.request("pair-a", "wrong", "ip-a", "")
+        self.assertEqual(error.exception.status, 429)
+        for index in range(auth.REQUEST_LIMIT * (auth.SHARED_SOURCES - 1)):
+            with self.assertRaises(WebError) as error:
+                self.auth.request(f"pair-{index}", "wrong", "ip-a", "")
+            self.assertEqual(error.exception.status, 400)
+        with self.assertRaises(WebError) as error:
+            self.auth.request("new-cookie", "wrong", "ip-a", "")
+        self.assertEqual(error.exception.status, 429)
+        with self.assertRaises(WebError) as error:
+            self.auth.request("new-cookie", "wrong", "ip-b", "")
+        self.assertEqual(error.exception.status, 400)
+        self.clock.now += auth.SOURCE_WINDOW
+        with self.assertRaises(WebError) as error:
+            self.auth.request("new-cookie", "wrong", "ip-a", "")
+        self.assertEqual(error.exception.status, 400)
+
+    def test_mail_cooldown_does_not_use_up_request_quota_or_captcha(self):
+        self.ask("pair-a")
+        self.auth.new_captcha("pair-b", "192.168.1.9")
+        answer = self.auth.captchas[auth.digest("pair-b")][0]
+        for _ in range(auth.REQUEST_LIMIT + 2):
+            with self.assertRaises(WebError) as error:
+                self.auth.request("pair-b", answer, "192.168.1.9", "")
+            self.assertIn("秒后再试", str(error.exception))
+        self.clock.now += auth.MAIL_INTERVAL
+        self.assertIsNotNone(self.auth.request("pair-b", answer, "192.168.1.9", "")["pending"])
+
+    def test_full_source_table_forgets_the_longest_idle_source(self):
+        with patch.object(captcha, "png", return_value=b"png"), patch.object(auth, "MAX_SOURCES", 4):
+            self.auth.new_captcha("pair-a", "ip-a")
+            self.clock.now += 1
+            self.auth.new_captcha("pair-b", "ip-b")
+            self.clock.now += 1
+            self.auth.new_captcha("pair-c", "ip-c")
+            self.assertEqual(len(self.auth.sources), 4)
+            self.assertNotIn(("captcha", "ip-a"), self.auth.sources)
+            self.assertIn(("captcha", "ip-b"), self.auth.sources)
+            self.assertIn(("captcha", "ip-c", auth.digest("pair-c")), self.auth.sources)
 
     def test_verify_binds_to_requesting_browser_and_limits_attempts(self):
         self.ask("pair-a")
@@ -208,6 +283,39 @@ class AuthTests(unittest.TestCase):
                 self.auth._issue("A", "ip")
         self.assertEqual(self.auth.devices(None), [])
 
+    def test_failed_removal_keeps_device_visible_and_can_be_retried(self):
+        for operation in ("single", "others", "logout"):
+            for failure in ("replace", "mkdir"):
+                with self.subTest(operation=operation, failure=failure):
+                    with self.auth.lock:
+                        token = self.auth._issue("A", "ip")
+                    ident = self.auth.devices(None)[0]["id"]
+                    def remove():
+                        if operation == "logout":
+                            self.auth.logout(token)
+                        else:
+                            self.auth.revoke(ident if operation == "single" else "others", None)
+                    target = patch.object(auth.os, "replace", side_effect=OSError) if failure == "replace" else patch.object(Path, "mkdir", side_effect=OSError)
+                    with target, self.assertLogs(auth.log, level="ERROR"):
+                        with self.assertRaises(WebError) as error:
+                            remove()
+                    self.assertEqual(error.exception.status, 500)
+                    self.assertEqual(self.auth.devices(None)[0]["id"], ident)
+                    self.assertIsNotNone(auth.Auth(clock=self.clock).check(token, "ip")[0])
+                    remove()
+                    self.assertIsNone(self.auth.check(token, "ip")[0])
+                    self.assertIsNone(auth.Auth(clock=self.clock).check(token, "ip")[0])
+
+    def test_failed_issue_preserves_device_evicted_at_capacity(self):
+        with patch.object(auth, "MAX_DEVICES", 1), self.auth.lock:
+            token = self.auth._issue("A", "ip")
+            with patch.object(auth.os, "replace", side_effect=OSError), self.assertLogs(auth.log, level="ERROR"):
+                with self.assertRaises(WebError):
+                    self.auth._issue("B", "ip")
+        self.assertEqual([d["name"] for d in self.auth.devices(None)], ["A"])
+        self.assertIsNotNone(self.auth.check(token, "ip")[0])
+        self.assertIsNotNone(auth.Auth(clock=self.clock).check(token, "ip")[0])
+
     def test_corrupt_device_file_is_ignored(self):
         Path(self.temp.name, "management_devices.json").write_text("{broken", encoding="utf-8")
         self.assertEqual(self.auth.devices(None), [])
@@ -224,15 +332,32 @@ class AuthTests(unittest.TestCase):
 
 
 class CaptchaTests(unittest.TestCase):
-    def test_answer_not_in_markup(self):
+    def test_image_contains_only_flattened_png_pixels(self):
         for _ in range(20):
             text = captcha.answer()
             self.assertEqual(len(text), 5)
             self.assertTrue(set(text) <= set(captcha.ALPHABET))
-            image = captcha.svg(text)
-            self.assertTrue(image.startswith("<svg"))
-            self.assertNotIn("<text", image)
-            self.assertNotIn(text, image.replace(" ", ""))
+            image = captcha.png(text)
+            self.assertTrue(image.startswith(b"\x89PNG\r\n\x1a\n"))
+            offset, chunks = 8, {}
+            while offset < len(image):
+                size = struct.unpack(">I", image[offset:offset + 4])[0]
+                kind = image[offset + 4:offset + 8]
+                data = image[offset + 8:offset + 8 + size]
+                crc = struct.unpack(">I", image[offset + 8 + size:offset + 12 + size])[0]
+                self.assertEqual(crc, zlib.crc32(kind + data))
+                chunks[kind] = data
+                offset += size + 12
+            self.assertEqual(offset, len(image))
+            self.assertEqual(list(chunks), [b"IHDR", b"IDAT", b"IEND"])
+            self.assertEqual(struct.unpack(">IIBBBBB", chunks[b"IHDR"]), (160, 56, 8, 2, 0, 0, 0))
+            pixels = zlib.decompress(chunks[b"IDAT"])
+            self.assertEqual(len(pixels), 56 * (160 * 3 + 1))
+            self.assertTrue(all(pixels[y * 481] == 0 for y in range(56)))
+            self.assertGreater(len(set(pixels)), 50)
+
+    def test_same_answer_has_randomized_pixels(self):
+        self.assertNotEqual(captcha.png("23457"), captcha.png("23457"))
 
 
 class MailerTests(unittest.TestCase):

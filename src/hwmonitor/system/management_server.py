@@ -194,7 +194,7 @@ class ManagementServer:
                     self._send(200, {"authenticated": bool(token), **status})
                     return
                 if path == "/api/auth/captcha":
-                    self._send(200, web.auth.new_captcha(self._pair()).encode("utf-8"), "image/svg+xml")
+                    self._send(200, web.auth.new_captcha(self._pair(), self.client_address[0]), "image/png")
                     return
                 if not path.startswith("/api/"):
                     raise WebError(404, "页面不存在")

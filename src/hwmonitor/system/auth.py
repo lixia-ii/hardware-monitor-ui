@@ -32,10 +32,19 @@ CODE_TTL, CAPTCHA_TTL, MAX_ATTEMPTS = 600, 120, 5
 # Every request may send a mail: bound them all, whoever asks.
 MAIL_INTERVAL, MAIL_LIMITS = 60, ((3600, 5), (86400, 20))
 MAX_DEVICES, MAX_PENDING, MAX_CAPTCHAS = 20, 8, 256
+# Per browser per minute; one address (NAT, localhost) may carry SHARED_SOURCES browsers' worth.
+SOURCE_WINDOW, CAPTCHA_LIMIT, REQUEST_LIMIT, SHARED_SOURCES, MAX_SOURCES = 60, 12, 6, 4, 1024
 
 
 def digest(token):
     return hashlib.sha256(token.encode()).hexdigest()
+
+
+def recent(times, now, span):
+    """Drop timestamps at least `span` old from the deque; returns it (oldest first)."""
+    while times and now - times[0] >= span:
+        times.popleft()
+    return times
 
 
 def cookies(header):
@@ -81,6 +90,7 @@ class Auth:
         self.load_mail, self.send_mail, self.clock = load_mail, send_mail, clock
         self.events = queue.Queue()
         self.captchas, self.pending, self.sent = {}, {}, deque()
+        self.sources = {}
         self._devices = None
 
     def drain(self):
@@ -117,15 +127,16 @@ class Auth:
             del self._devices[key]
         return self._devices
 
-    def _persist(self):
+    def _persist(self, devices=None):
         target = self.path()
-        target.parent.mkdir(parents=True, exist_ok=True)
-        devices = [{k: d[k] for k in ("id", "hash", "name", "ip", "created", "last_seen")} for d in self._all().values()]
+        devices = self._all() if devices is None else devices
+        records = [{k: d[k] for k in ("id", "hash", "name", "ip", "created", "last_seen")} for d in devices.values()]
         temp = None
         try:
+            target.parent.mkdir(parents=True, exist_ok=True)
             with tempfile.NamedTemporaryFile(mode="w", encoding="utf-8", dir=target.parent, delete=False) as f:
                 temp = f.name
-                json.dump({"devices": devices}, f, ensure_ascii=False, indent=2)
+                json.dump({"devices": records}, f, ensure_ascii=False, indent=2)
                 f.flush()
                 os.fsync(f.fileno())
             os.replace(temp, target)
@@ -135,23 +146,24 @@ class Auth:
         finally:
             if temp and os.path.exists(temp):
                 os.unlink(temp)
-        for d in self._all().values():
+        for d in devices.values():
             d["saved"] = d["last_seen"]
+
+    def _save_devices(self, devices):
+        """Caller holds the lock; publish membership changes only after the atomic save."""
+        self._persist(devices)
+        self._devices = devices
 
     def _issue(self, name, ip):
         """Caller holds the lock. Returns the raw token, which is never stored."""
-        devices = self._all()
+        devices = dict(self._all())
         token = secrets.token_urlsafe(32)
         now = self.clock()
         while len(devices) >= MAX_DEVICES:
             del devices[min(devices, key=lambda k: devices[k]["last_seen"])]
         devices[digest(token)] = {"id": secrets.token_hex(6), "hash": digest(token), "name": name, "ip": ip,
                                   "created": now, "last_seen": now, "saved": now}
-        try:
-            self._persist()
-        except WebError:
-            del devices[digest(token)]  # Never hand out a token that would not survive a restart.
-            raise
+        self._save_devices(devices)
         self.events.put(("paired", {"name": name, "ip": ip}))
         return token
 
@@ -186,15 +198,15 @@ class Auth:
             keys = [k for k, d in devices.items() if (k != current if ident == "others" else d["id"] == ident)]
             if not keys and ident != "others":
                 raise WebError(404, "设备不存在或已移除")
-            for key in keys:
-                del devices[key]
-            self._persist()
+            self._save_devices({k: d for k, d in devices.items() if k not in keys})
             return len(keys)
 
     def logout(self, token):
         with self.lock:
-            if self._all().pop(digest(token), None) is not None:
-                self._persist()
+            devices = self._all()
+            key = digest(token)
+            if key in devices:
+                self._save_devices({k: d for k, d in devices.items() if k != key})
 
     # Pairing -----------------------------------------------------------------
     def _prune(self, now):
@@ -202,18 +214,38 @@ class Auth:
             del self.captchas[key]
         for key in [k for k, p in self.pending.items() if p["expires"] < now]:
             del self.pending[key]
-        while self.sent and now - self.sent[0] > MAIL_LIMITS[-1][0]:
-            self.sent.popleft()
+        recent(self.sent, now, MAIL_LIMITS[-1][0])
+        for key in [k for k, times in self.sources.items() if not recent(times, now, SOURCE_WINDOW)]:
+            del self.sources[key]
 
-    def new_captcha(self, pair):
+    def _source_limit(self, action, ip, pair, limit, now):
+        """Count one attempt against the socket peer and, more tightly, the browser behind it.
+
+        The address bound never trusts forwarding headers or cookies (rotating the pairing
+        cookie only reaches the shared bound); the per-browser bound keeps one busy browser
+        from locking out others behind the same address.
+        """
+        keys = ((action, ip), (action, ip, digest(pair)))
+        if any(len(self.sources.get(key, ())) >= cap for key, cap in zip(keys, (limit * SHARED_SOURCES, limit))):
+            raise WebError(429, "请求过于频繁，请一分钟后再试")
+        for key in keys:
+            if key not in self.sources:
+                # Full table: forget the longest-idle source rather than refusing newcomers.
+                while len(self.sources) >= MAX_SOURCES:
+                    del self.sources[min((k for k in self.sources if k not in keys), key=lambda k: self.sources[k][-1])]
+                self.sources[key] = deque()
+            self.sources[key].append(now)
+
+    def new_captcha(self, pair, ip):
         with self.lock:
             now = self.clock()
             self._prune(now)
+            self._source_limit("captcha", ip, pair, CAPTCHA_LIMIT, now)
             while len(self.captchas) >= MAX_CAPTCHAS:
                 del self.captchas[min(self.captchas, key=lambda k: self.captchas[k][1])]
             text = captcha.answer()
             self.captchas[digest(pair)] = (text, now + CAPTCHA_TTL)
-        return captcha.svg(text)
+        return captcha.png(text)
 
     def _wait(self, now):
         """Seconds until another request is allowed (0 when allowed)."""
@@ -229,14 +261,16 @@ class Auth:
         with self.lock:
             now = self.clock()
             self._prune(now)
+            # Mail cooldown first: waiting it out must not also use up this browser's quota or captcha.
+            wait = self._wait(now)
+            if wait:
+                raise WebError(429, f"请求过于频繁，请 {wait} 秒后再试" if wait < 120 else f"请求过于频繁，请约 {wait // 60} 分钟后再试")
+            self._source_limit("request", ip, pair, REQUEST_LIMIT, now)
             expected = self.captchas.pop(key, None)  # One attempt per image.
             if expected is None:
                 raise WebError(400, "验证码已过期，请点击图片刷新")
             if not isinstance(answer, str) or not hmac.compare_digest(answer.strip().upper().encode(), expected[0].encode()):
                 raise WebError(400, "验证码错误，已换一张")
-            wait = self._wait(now)
-            if wait:
-                raise WebError(429, f"请求过于频繁，请 {wait} 秒后再试" if wait < 120 else f"请求过于频繁，请约 {wait // 60} 分钟后再试")
             for old in [k for k, p in self.pending.items() if p["pair"] == key]:
                 del self.pending[old]
             if len(self.pending) >= MAX_PENDING:

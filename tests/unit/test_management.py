@@ -211,10 +211,10 @@ class ServerTests(unittest.TestCase):
         self.assertIn("HttpOnly", cookie)
         self.assertIn("SameSite=Strict", cookie)
         pair = cookie.split(";")[0]
-        status, headers, svg = self.request("GET", "/api/auth/captcha", headers={"Cookie": pair}, login=False)
-        self.assertEqual((status, headers["Content-Type"]), (200, "image/svg+xml"))
+        status, headers, image = self.request("GET", "/api/auth/captcha", headers={"Cookie": pair}, login=False)
+        self.assertEqual((status, headers["Content-Type"]), (200, "image/png"))
+        self.assertTrue(image.startswith(b"\x89PNG\r\n\x1a\n"))
         answer = self.server.auth.captchas[auth.digest(pair.split("=", 1)[1])][0]
-        self.assertNotIn(answer.encode(), svg)
         self.assertEqual(self.request("POST", "/api/auth/request", {"captcha": answer},
                                       {"Cookie": pair, "Origin": "http://evil.test"}, login=False)[0], 403)
         with patch.object(auth.mailer, "load", return_value=dict(auth.mailer.DEFAULT)):
@@ -258,6 +258,29 @@ class ServerTests(unittest.TestCase):
         self.assertEqual(self.request("POST", "/api/auth/revoke", {"id": "others"})[0], 200)
         self.assertEqual(self.request("GET", "/api/state", headers={"Cookie": session}, login=False)[0], 401)
         self.assertEqual(self.request("GET", "/api/state")[0], 200)
+
+    def test_captcha_and_pairing_limits_ignore_forwarding_headers_and_cookie_rotation(self):
+        with patch.object(auth.captcha, "png", return_value=b"png"):
+            for index in range(auth.CAPTCHA_LIMIT * auth.SHARED_SOURCES):
+                headers = {"Cookie": f"hm_pair=browser-cookie-{index:04d}", "X-Forwarded-For": f"192.0.2.{index}"}
+                self.assertEqual(self.request("GET", "/api/auth/captcha", headers=headers, login=False)[0], 200)
+            self.assertEqual(self.request("GET", "/api/auth/captcha", login=False)[0], 429)
+        for index in range(auth.REQUEST_LIMIT * auth.SHARED_SOURCES):
+            headers = {"Cookie": f"hm_pair=another-cookie-{index:04d}", "X-Forwarded-For": f"192.0.2.{index}"}
+            self.assertEqual(self.request("POST", "/api/auth/request", {"captcha": "wrong"}, headers, login=False)[0], 400)
+        self.assertEqual(self.request("POST", "/api/auth/request", {"captcha": "wrong"}, login=False)[0], 429)
+
+    def test_failed_revoke_and_logout_can_be_retried_over_http(self):
+        ident = self.server.auth.devices(None)[0]["id"]
+        for endpoint, payload in (("revoke", {"id": ident}), ("logout", {})):
+            with self.subTest(endpoint=endpoint):
+                with patch.object(auth.os, "replace", side_effect=OSError), self.assertLogs(auth.log, level="ERROR"):
+                    self.assertEqual(self.request("POST", "/api/auth/" + endpoint, payload)[0], 500)
+                body = json.loads(self.request("GET", "/api/auth/devices")[2])
+                self.assertEqual(body["devices"][0]["id"], ident)
+        self.assertEqual(self.request("POST", "/api/auth/logout", {})[0], 200)
+        self.assertEqual(self.request("GET", "/api/state")[0], 401)
+        self.assertIsNone(auth.Auth().check(self.token, "127.0.0.1")[0])
 
     def test_unknown_routes_and_cross_site_writes(self):
         for path in ("/api/session", "/api/login", "/data.json"):

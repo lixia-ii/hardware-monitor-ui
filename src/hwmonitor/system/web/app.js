@@ -318,7 +318,22 @@ $("#content").addEventListener("pointermove",event=>{
 window.addEventListener("hashchange",()=>{if(active)navigate(location.hash.slice(1));});
 window.addEventListener("beforeunload",event=>{if(dirty){event.preventDefault();event.returnValue="";}});
 function loginError(message = "") {$("#login-error").textContent = message;}
-function refreshCaptcha() {$("#captcha").src = "/api/auth/captcha?t=" + Date.now(); $("#captcha-input").value = "";}
+// Loads the new image before swapping it in, so a refused refresh keeps the current one readable.
+// `message` is shown alongside: success clears any stale load error, failure appends the reason.
+async function refreshCaptcha(message = "") {
+  $("#captcha-input").value = ""; loginError(message);
+  try {
+    const response = await fetch("/api/auth/captcha", {cache:"no-store", signal:AbortSignal.timeout(15000)});
+    if (!response.ok) throw new Error((await response.json().catch(() => ({}))).error || "验证码加载失败");
+    const image = await response.blob();
+    $("#captcha").src = await new Promise((resolve, reject) => {
+      const reader = new FileReader(); reader.onload = () => resolve(reader.result); reader.onerror = reject; reader.readAsDataURL(image);
+    });
+  } catch (error) {
+    const reason = `验证码刷新失败（${error.message || "网络错误"}），请稍后点击图片重试。`;
+    loginError(message ? `${message}；${reason}` : reason);
+  }
+}
 function showLogin(status) {
   active = false; access = null; dirty = false;
   if ($("#device-dialog").open) $("#device-dialog").close();
@@ -328,7 +343,7 @@ function showLogin(status) {
 function captchaStep(message = "") {
   clearTimeout(loginTimer);
   $("#captcha-form").hidden = false; $("#code-form").hidden = true;
-  refreshCaptcha(); loginError(message);
+  refreshCaptcha(message);
 }
 function codeStep(pending) {
   $("#captcha-form").hidden = true; $("#code-form").hidden = false;
@@ -350,12 +365,12 @@ async function enter() {
   try {await start();}
   catch {notice("无法连接管理服务，请检查地址和电脑端运行状态。正在重试…"); setTimeout(connect, 5000);}
 }
-$("#captcha").addEventListener("click", refreshCaptcha);
+$("#captcha").addEventListener("click", () => refreshCaptcha());
 $("#restart-login").addEventListener("click", () => captchaStep());
 $("#captcha-form").addEventListener("submit", async event => {
   event.preventDefault(); const button = $("[type=submit]", event.target); button.disabled = true;
   try {const result = await api("/api/auth/request", {captcha: $("#captcha-input").value.trim()}); loginError(""); $("#code-input").value = ""; codeStep(result.pending); $("#code-input").focus();}
-  catch (error) {refreshCaptcha(); loginError(error.message);}
+  catch (error) {refreshCaptcha(error.message);}
   finally {button.disabled = false;}
 });
 $("#code-form").addEventListener("submit", async event => {

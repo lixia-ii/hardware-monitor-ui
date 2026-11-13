@@ -1,6 +1,8 @@
-"""Dependency-free SVG captcha: glyphs are distorted stroke paths, never <text>, so the answer is not in the markup."""
+"""Dependency-free raster captcha; only flattened PNG pixels leave the server."""
 import math
 import secrets
+import struct
+import zlib
 
 # Polylines on a 10 x 16 grid; only digits that stay distinct when rotated a little.
 GLYPHS = {
@@ -26,13 +28,41 @@ def answer(length=5):
     return "".join(secrets.choice(ALPHABET) for _ in range(length))
 
 
-def svg(text):
-    parts = [f'<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 {WIDTH} {HEIGHT}" width="{WIDTH}" height="{HEIGHT}">',
-             f'<rect width="{WIDTH}" height="{HEIGHT}" rx="10" fill="#0f1522"/>']
-    for _ in range(5):  # Background noise curves cross the glyphs.
+def png(text):
+    pixels = bytearray((15, 21, 34)) * (WIDTH * HEIGHT)
+
+    def line(start, end, color, width, opacity=1):
+        """Rasterize a round-ended segment with antialiased edges."""
+        ax, ay = start
+        bx, by = end
+        dx, dy = bx - ax, by - ay
+        length = dx * dx + dy * dy
+        radius = width / 2
+        rgb = tuple(bytes.fromhex(color[1:]))
+        for y in range(max(0, math.floor(min(ay, by) - radius - 1)), min(HEIGHT, math.ceil(max(ay, by) + radius + 1))):
+            for x in range(max(0, math.floor(min(ax, bx) - radius - 1)), min(WIDTH, math.ceil(max(ax, bx) + radius + 1))):
+                t = max(0, min(1, ((x - ax) * dx + (y - ay) * dy) / length)) if length else 0
+                distance = math.hypot(x - ax - t * dx, y - ay - t * dy)
+                alpha = max(0, min(1, radius + .5 - distance)) * opacity
+                if alpha:
+                    offset = (y * WIDTH + x) * 3
+                    for channel, value in enumerate(rgb):
+                        old = pixels[offset + channel]
+                        pixels[offset + channel] = round(old + (value - old) * alpha)
+
+    def curve():
         points = [(uniform(0, WIDTH), uniform(0, HEIGHT)) for _ in range(4)]
-        d = "M{:.1f},{:.1f} C{:.1f},{:.1f} {:.1f},{:.1f} {:.1f},{:.1f}".format(*sum(points, ()))
-        parts.append(f'<path d="{d}" fill="none" stroke="{secrets.choice(COLORS)}" stroke-opacity=".45" stroke-width="{uniform(1, 2.2):.1f}"/>')
+        color, width = secrets.choice(COLORS), uniform(1, 2.2)
+        previous = points[0]
+        for i in range(1, 33):
+            t = i / 32
+            weights = ((1 - t) ** 3, 3 * (1 - t) ** 2 * t, 3 * (1 - t) * t * t, t ** 3)
+            current = tuple(sum(w * p[axis] for w, p in zip(weights, points)) for axis in (0, 1))
+            line(previous, current, color, width, .45)
+            previous = current
+
+    for _ in range(5):  # Background noise curves cross the glyphs.
+        curve()
     step = (WIDTH - 20) / len(text)
     for index, char in enumerate(text):
         scale, angle = uniform(1.9, 2.4), math.radians(uniform(-22, 22))
@@ -44,9 +74,18 @@ def svg(text):
             return cx + x * math.cos(angle) - y * math.sin(angle), cy + x * math.sin(angle) + y * math.cos(angle)
         color = secrets.choice(COLORS)
         for stroke in GLYPHS[char]:
-            d = " ".join(("M" if i == 0 else "L") + "{:.1f},{:.1f}".format(*place(*p)) for i, p in enumerate(stroke))
-            parts.append(f'<path d="{d}" fill="none" stroke="{color}" stroke-width="{uniform(2.6, 3.6):.1f}" stroke-linecap="round" stroke-linejoin="round"/>')
+            points = [place(*p) for p in stroke]
+            width = uniform(2.6, 3.6)
+            for start, end in zip(points, points[1:]):
+                line(start, end, color, width)
     for _ in range(30):
-        parts.append(f'<circle cx="{uniform(0, WIDTH):.1f}" cy="{uniform(0, HEIGHT):.1f}" r="{uniform(.6, 1.6):.1f}" fill="{secrets.choice(COLORS)}" fill-opacity=".6"/>')
-    parts.append("</svg>")
-    return "".join(parts)
+        point = (uniform(0, WIDTH), uniform(0, HEIGHT))
+        line(point, point, secrets.choice(COLORS), uniform(1.2, 3.2), .6)
+
+    def chunk(kind, data):
+        return struct.pack(">I", len(data)) + kind + data + struct.pack(">I", zlib.crc32(kind + data))
+
+    # RGB, 8 bits per channel, no metadata or separate glyph objects.
+    rows = b"".join(b"\0" + pixels[y * WIDTH * 3:(y + 1) * WIDTH * 3] for y in range(HEIGHT))
+    return (b"\x89PNG\r\n\x1a\n" + chunk(b"IHDR", struct.pack(">IIBBBBB", WIDTH, HEIGHT, 8, 2, 0, 0, 0))
+            + chunk(b"IDAT", zlib.compress(rows)) + chunk(b"IEND", b""))
