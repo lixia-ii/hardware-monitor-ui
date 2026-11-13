@@ -18,6 +18,7 @@ os.environ["HARDWARE_MONITOR_DATA_DIR"] = str(ROOT / ".build" / "test-data" / "w
 
 from hwmonitor import settings
 from hwmonitor.core import history
+from hwmonitor.core.runtime import RuntimeState
 from hwmonitor.sensors import reading
 from hwmonitor.system import auth, captcha
 from hwmonitor.system.management_server import ManagementServer
@@ -31,7 +32,10 @@ class FixtureDesktop(WebManagementMixin):
         self.settings = settings.validate({"routers": [dict(settings.DEFAULT_TPLINK, id="primary", name="家庭路由器", enabled=True)]})
         self.data = reading.empty_reading()
         self.history = deque(maxlen=history.MAX_ROWS)
-        self.recent_alerts = deque([{"time":"2026-11-11 10:00:00", "message":"测试告警：CPU 温度已恢复"}])
+        self.runtime = RuntimeState()
+        self.recent_alerts = self.runtime.recent_alerts
+        for i in range(53):
+            self.runtime.record(f"测试告警 {i + 1}：CPU 温度已恢复")
         self.sensor_names = {}
         self.collector = SimpleNamespace(storage_error=None, configure=lambda _: None)
         self.web = SimpleNamespace(error=None)

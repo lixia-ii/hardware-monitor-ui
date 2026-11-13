@@ -180,7 +180,7 @@ class ServerTests(unittest.TestCase):
 
     def test_lan_listener_and_routes_require_pairing(self):
         self.assertEqual(self.server.server.server_address[0], "0.0.0.0")
-        routes = ("/api/state", "/api/settings", "/api/history", "/api/history.csv", "/api/hardware",
+        routes = ("/api/state", "/api/alerts", "/api/settings", "/api/history", "/api/history.csv", "/api/hardware",
                   "/api/diagnostics", "/api/auth/devices")
         for path in routes:
             status, headers, _ = self.request("GET", path)

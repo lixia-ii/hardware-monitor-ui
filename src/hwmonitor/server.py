@@ -24,7 +24,7 @@ log = logging.getLogger(__name__)
 class Controller(ManagementActions):
     def __init__(self, options, backend, host="127.0.0.1", port=7076):
         self.settings = options
-        self.state = RuntimeState()
+        self.runtime = self.state = RuntimeState()
         self.history, self.recent_alerts = self.state.history, self.state.recent_alerts
         self.data, self.sensor_names = None, {}
         self.web = WebServer()
@@ -73,6 +73,7 @@ class Controller(ManagementActions):
 
     def start(self):
         try:
+            self.state.load_alerts(paths.DATA / "alerts.sqlite3")
             error = self.management.apply(True, self.port)
             if error:
                 raise OSError(error)
@@ -123,6 +124,7 @@ class Controller(ManagementActions):
         self.collector.stop()
         self.management.stop()
         self.web.stop()
+        self.state.close_alerts()
         if self.collector.ident is not None:
             self.collector.join(timeout=8)
             if self.collector.is_alive():

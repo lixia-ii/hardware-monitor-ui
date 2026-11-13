@@ -84,6 +84,11 @@ def check_http(app):
         assert status == 200 and csv.startswith(b"\xef\xbb\xbf") and b"cpu_temp" in csv
         assert request("GET", "/api/history?hours=2")[0] == 400
         assert request("GET", "/api/state")[0] == 200
+        first = json.loads(request("GET", "/api/alerts?page=1")[2])
+        last = json.loads(request("GET", "/api/alerts?page=3")[2])
+        assert first["total"] >= 53 and len(first["items"]) == 20
+        assert last["page"] == 3 and last["items"]
+        assert request("GET", "/api/alerts?page_size=101")[0] == 400
         diag = json.loads(request("GET", "/api/diagnostics")[2])
         assert "password_hash" not in json.dumps(diag)
         assert request("GET", "/api/session")[0] == 404
@@ -95,6 +100,8 @@ def check_http(app):
 
 with patch("hwmonitor.settings.load", return_value=config), patch("hwmonitor.core.collector.reading.read", side_effect=lambda *args: dict(fixture)), patch("hwmonitor.system.autostart.sync"), patch("hwmonitor.system.autostart.is_enabled", return_value=False), patch("hwmonitor.core.actions.hwinfo.load", return_value={"model":"Fixture", "details":[], "error":None}) as hardware_load:
     app = MainWindow()
+    for index in range(53):
+        app.runtime.record(f"分页验证告警 {index}")
     app.root.withdraw()
     app.root.report_callback_exception = lambda *args: failures.append(str(args))
     app.history.append((time.time(), history.sample(fixture)))
@@ -105,6 +112,24 @@ with patch("hwmonitor.settings.load", return_value=config), patch("hwmonitor.cor
             return
         try:
             assert done.is_set(), "HTTP worker timed out"
+            app.alerts_btn.invoke()
+            alert_window = app.alerts_win
+            assert "分页验证告警" in alert_window.text.get("1.0", "end")
+            app.show_alerts()
+            assert app.alerts_win is alert_window
+            alert_window.destroy()
+            app.show_alerts()
+            assert app.alerts_win is not alert_window
+            app.alerts_win.destroy()
+            # From the modal settings dialog the log takes the grab, so it can be closed.
+            app.show_settings()
+            app.show_alerts()
+            assert app.root.grab_current() is app.alerts_win
+            app.alerts_win.event_generate("<Escape>")
+            app.root.update()
+            assert not app.alerts_win.winfo_exists()
+            assert app.root.grab_current() is app.settings_win
+            app.settings_win.destroy()
             assert app.settings["interval"] == 2
             assert app.root.attributes("-topmost")
             assert app.float_win is not None

@@ -203,6 +203,8 @@ class ManagementServer:
                     self._send(200, {**self._call("state"), "pairing": len(web.auth.active())})
                 elif path == "/api/settings":
                     self._send(200, self._call("settings"))
+                elif path == "/api/alerts":
+                    self._send(200, self._call("alerts", parse_qs(parsed.query)))
                 elif path == "/api/auth/devices":
                     mail = mailer.load()
                     self._send(200, {"devices": web.auth.devices(device["hash"]), "pending": web.auth.active(),

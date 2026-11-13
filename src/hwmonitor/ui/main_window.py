@@ -9,7 +9,7 @@ import time
 import tkinter as tk
 from tkinter import ttk
 
-from hwmonitor import settings
+from hwmonitor import paths, settings
 from hwmonitor.core.runtime import RuntimeState
 from hwmonitor.sensors.backend import WindowsBackend
 from hwmonitor.core.collector import Collector
@@ -19,6 +19,7 @@ from hwmonitor.system.management_server import ManagementServer
 from hwmonitor.system.webbridge import Bridge
 from hwmonitor.ui.web_management import WebManagementMixin
 from hwmonitor.ui import theme
+from hwmonitor.ui.alerts_dialog import AlertsDialogMixin
 from hwmonitor.ui.customize_dialog import CustomizeDialogMixin
 from hwmonitor.ui.device_cards import DeviceCardsMixin
 from hwmonitor.ui.dialogs import DialogMixin
@@ -42,7 +43,7 @@ def on_screen(x, y):
 
 
 class MainWindow(WebManagementMixin, SettingsDialogMixin, CustomizeDialogMixin, HistoryDialogMixin, FloatingWindowMixin,
-                 InfoWindowMixin, DeviceCardsMixin, DialogMixin):
+                 InfoWindowMixin, AlertsDialogMixin, DeviceCardsMixin, DialogMixin):
     """主窗口: CPU/显卡卡片、可选分组、提示条与底部工具栏; 各对话框和悬浮窗由混入类提供。"""
 
     def __init__(self):
@@ -132,6 +133,8 @@ class MainWindow(WebManagementMixin, SettingsDialogMixin, CustomizeDialogMixin, 
         self.info_btn.pack(side="right")
         self.history_btn = ttk.Button(self.btn_bar, text="历史", command=self.show_history, cursor="hand2")
         self.history_btn.pack(side="right", padx=(0, "6p"))
+        self.alerts_btn = ttk.Button(self.btn_bar, text="告警", command=self.show_alerts, cursor="hand2")
+        self.alerts_btn.pack(side="right", padx=(0, "6p"))
         ttk.Button(self.btn_bar, text="设置", command=self.show_settings, cursor="hand2").pack(side="left")
         # 可选分组: 没有数据就不显示。按此顺序排在底栏之前
         self.optional = [b if b is self.router_group else b.master for b in self._group_boxes()]
@@ -154,6 +157,7 @@ class MainWindow(WebManagementMixin, SettingsDialogMixin, CustomizeDialogMixin, 
         self.gpu_sel = self.settings["gpu_id"]
         self.gpu_cur = None
         self.runtime = RuntimeState()
+        self.runtime.load_alerts(paths.DATA / "alerts.sqlite3")
         self.history = self.runtime.history
         self.recent_alerts = self.runtime.recent_alerts
         self.alert_engine = self.runtime.alert_engine
@@ -459,6 +463,7 @@ class MainWindow(WebManagementMixin, SettingsDialogMixin, CustomizeDialogMixin, 
             self.web.stop()
             # 端口已空出, 先让出单实例: 新实例不必等下面关闭硬件 (采集线程可能正在打开内存条, 要几秒)
             tray.release_single_instance()
+            self.runtime.close_alerts()
             self.collector.join(timeout=8)  # 采集线程退出时关闭硬件, 释放驱动
             return True
         self._background(self.root, stop, lambda _: self.root.destroy())
@@ -729,7 +734,7 @@ class MainWindow(WebManagementMixin, SettingsDialogMixin, CustomizeDialogMixin, 
                 self.render(data)
         if data and self.splash and not data.get("initializing"):
             self._hide_splash()
-        error = self.collector.storage_error
+        error = self.runtime.storage_error(self.collector)
         if error and error != self._storage_notice:
             self._storage_notice = error
             self._flash(error)

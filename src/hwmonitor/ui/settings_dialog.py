@@ -514,6 +514,9 @@ class SettingsDialogMixin:
         def switch(key):
             return lambda on: (self._save_alert(key, on), refresh())
 
+        group = self._group(page, "告警记录")
+        row = self._row(group, "最近告警", "保留最近 1000 条，重启后恢复，支持分页查看")
+        ttk.Button(row.control, text="查看记录…", style="Card.TButton", command=self.show_alerts).pack()
         group = self._group(page, "温度阈值")
         shared_rows = [number_row(group, "cpu_temp", "CPU 温度阈值", "高温提醒与风扇异常共用", 40, 110, "°C"),
                        number_row(group, "gpu_temp", "显卡温度阈值", "高温提醒与风扇异常共用", 40, 110, "°C"),

@@ -1,6 +1,5 @@
 """主界面的设备卡片 (OpenWrt / 远程电脑 / TP-Link): 单行标题、详情、终端流量榜和在线状态变更提醒。"""
 import queue
-import time
 import tkinter as tk
 from tkinter import ttk
 
@@ -28,7 +27,7 @@ class DeviceCardsMixin:
                     shown = "、".join(name[:24] for name in names[:4])
                     parts.append(title + "：" + shown + (f" 等 {len(names)} 台" if len(names) > 4 else ""))
             message = configs[ident]["name"] + " · " + "；".join(parts)
-            self.recent_alerts.append({"time": time.strftime("%Y-%m-%d %H:%M:%S"), "message": message})
+            self.runtime.record(message)
             if not self.tray.notify("设备在线状态变更", message, warning=False):
                 self._flash(message)
 

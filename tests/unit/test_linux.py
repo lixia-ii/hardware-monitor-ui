@@ -129,6 +129,11 @@ class LinuxTests(unittest.TestCase):
 
     def test_controller_http_persistence_failure_conflict_and_shutdown(self):
         with patch.object(paths, "DATA", self.root):
+            from hwmonitor.core.alert_store import AlertStore
+            store = AlertStore(self.root / "alerts.sqlite3")
+            for index in range(53):
+                store.append({"time": "2000-01-01 00:00:00", "message": f"告警 {index}"})
+            store.close()
             controller = Controller(settings.validate({"interval": .5}), self.backend, port=0)
             failures = []
             def run():
@@ -200,10 +205,20 @@ class LinuxTests(unittest.TestCase):
                 self.assertEqual(web({"enabled": False})[0], 200)
                 self.assertIsNone(controller.web.server)
                 with patch("hwmonitor.sensors.hwinfo.load", return_value={"cpu": "test"}):
-                    for route in ("/api/state", "/api/history", "/api/history.csv", "/api/diagnostics"):
+                    for route in ("/api/state", "/api/alerts?page=1&page_size=20", "/api/history", "/api/history.csv", "/api/diagnostics"):
                         status, raw = request("GET", route)
                         self.assertEqual(status, 200, raw)
                         self.assertNotIn(b"password_protected", raw)
+                    self.assertEqual(request("GET", "/api/alerts?page=0")[0], 400)
+                    self.assertEqual(json.loads(request("GET", "/api/alerts?page=1&page_size=")[1])["page_size"], 20)
+                    alerts = json.loads(request("GET", "/api/alerts")[1])
+                    self.assertEqual(alerts["page_size"], 20)
+                    self.assertEqual((alerts["total"], alerts["pages"]), (53, 3))
+                    self.assertEqual(alerts["items"][0]["message"], "告警 52")
+                    last = json.loads(request("GET", "/api/alerts?page=3")[1])
+                    self.assertEqual(len(last["items"]), 13)
+                    self.assertEqual(last["items"][-1]["message"], "告警 0")
+                    self.assertNotIn("alerts", json.loads(request("GET", "/api/state")[1]))
                 self.assertTrue(controller.history)
             finally:
                 controller.stopping.set()

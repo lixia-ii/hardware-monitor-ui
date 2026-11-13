@@ -14,6 +14,7 @@ let snapshot = null, state = null, page = "overview", tab = "monitor", dirty = f
 let historyData = null, hours = 1, chartInterval = "auto", chartGpu = "", lastHistory = 0;
 let hardware = null, editorDevice = null, editingRevision = null, polling = false, toastTimer;
 let access = null, loginTimer = null;
+let alertData = null, alertPage = 1, alertRevision = null, alertRequest = 0, alertsLoading = false;
 
 async function api(path, body) {
   const options = {cache:"no-store", headers:{}, signal:AbortSignal.timeout(15000)};
@@ -46,7 +47,7 @@ async function navigate(next, force = false) {
   try {
     if (["settings","devices"].includes(page)) snapshot = await api("/api/settings");
     if (page === "history") {lastHistory = 0; await loadHistory();}
-    else if (page === "info") {hardware = await api("/api/hardware"); renderInfo();}
+    else if (page === "info") {hardware = await api("/api/hardware"); await loadAlerts(1); renderPage();}
     else renderPage();
   } catch (error) {notice(error.message);}
 }
@@ -126,7 +127,7 @@ function renderSettings() {
     body = inputRow("刷新间隔","interval",s.interval,{min:.5,max:30,step:.5,description:"秒 · 控制本机采集节奏"})+inputRow("默认显卡","gpu_id",s.gpu_id,{choices:gpus})+inputRow("网卡统计方式","nic_mode",s.nic_ids===null?"auto":"manual",{choices:[["auto","自动选择统计接口"],["manual","手动选择网卡"]]})+`<div class="form-row"><label>手动网卡<small>仅在手动模式生效；可以全部取消</small></label><div class="checkbox-list">${[...nics].map(([id,name])=>`<label><input type="checkbox" name="nic" value="${esc(id)}" ${(s.nic_ids||[]).includes(id)?"checked":""}>${esc(name)}</label>`).join("")||'<small>尚未检测到网卡</small>'}</div></div>`;
   } else if (tab === "alerts") {
     const a=s.alerts;
-    body = inputRow("温度告警","alerts.enabled",a.enabled,{type:"checkbox"})+inputRow("CPU 温度阈值","alerts.cpu_temp",a.cpu_temp,{min:40,max:110,description:"°C"})+inputRow("显卡温度阈值","alerts.gpu_temp",a.gpu_temp,{min:40,max:110,description:"°C"})+inputRow("持续超温时间","alerts.duration",a.duration,{min:0,max:300,description:"秒"})+inputRow("恢复温差","alerts.hysteresis",a.hysteresis,{min:1,max:20,description:"°C"})+inputRow("提醒间隔","alerts.cooldown",a.cooldown,{min:30,max:7200,description:"秒"})+inputRow("风扇异常检测","alerts.fan_enabled",a.fan_enabled,{type:"checkbox",description:"对应设备高温且风扇低速时提醒"})+inputRow("最低风扇转速","alerts.fan_min",a.fan_min,{min:1,max:5000,description:"RPM"})+inputRow("风扇异常持续时间","alerts.fan_duration",a.fan_duration,{min:5,max:600,description:"秒"})+`<p class="muted">告警由监控服务持续检测，可在「信息」查看本次运行记录。当前版本未提供手机锁屏推送。</p>`;
+    body = inputRow("温度告警","alerts.enabled",a.enabled,{type:"checkbox"})+inputRow("CPU 温度阈值","alerts.cpu_temp",a.cpu_temp,{min:40,max:110,description:"°C"})+inputRow("显卡温度阈值","alerts.gpu_temp",a.gpu_temp,{min:40,max:110,description:"°C"})+inputRow("持续超温时间","alerts.duration",a.duration,{min:0,max:300,description:"秒"})+inputRow("恢复温差","alerts.hysteresis",a.hysteresis,{min:1,max:20,description:"°C"})+inputRow("提醒间隔","alerts.cooldown",a.cooldown,{min:30,max:7200,description:"秒"})+inputRow("风扇异常检测","alerts.fan_enabled",a.fan_enabled,{type:"checkbox",description:"对应设备高温且风扇低速时提醒"})+inputRow("最低风扇转速","alerts.fan_min",a.fan_min,{min:1,max:5000,description:"RPM"})+inputRow("风扇异常持续时间","alerts.fan_duration",a.fan_duration,{min:5,max:600,description:"秒"})+`<p class="muted">告警由监控服务持续检测，可在「信息」分页查看最近 1000 条记录。当前版本未提供手机锁屏推送。</p>`;
   } else if (tab === "floating") {
     const f=s.floating;
     body = inputRow("显示电脑桌面悬浮窗","floating.enabled",f.enabled,{type:"checkbox"})+inputRow("悬浮窗置顶","floating.topmost",f.topmost,{type:"checkbox"})+inputRow("贴边自动隐藏","floating.autohide",f.autohide,{type:"checkbox"})+inputRow("显示内存","floating.show_mem",f.show_mem,{type:"checkbox"})+inputRow("显示网速","floating.show_net",f.show_net,{type:"checkbox"})+inputRow("不透明度","floating.opacity",f.opacity,{min:.3,max:1,step:.05,description:"0.3–1"});
@@ -219,9 +220,27 @@ function renderHistory() {
   const keys=["cpu_temp","gpu_temp","cpu_load","gpu_load","mem_load","gpu_mem_load","net_up","net_down"];
   $("#content").innerHTML=`<div class="chart-controls"><select id="history-hours" aria-label="时间范围"><option value="1" ${hours===1?"selected":""}>最近 1 小时</option><option value="24" ${hours===24?"selected":""}>最近 24 小时</option></select><select id="history-interval" aria-label="显示间隔">${[["auto","自动间隔"],["0","原始数据"],["30","30 秒"],["60","1 分钟"],["300","5 分钟"],["900","15 分钟"]].map(([v,n])=>`<option value="${v}" ${chartInterval===v?"selected":""}>${n}</option>`).join("")}</select><select id="history-gpu" aria-label="历史显卡">${historyData.gpus.map(([id,name])=>`<option value="${esc(id)}" ${historyData.gpu===id?"selected":""}>${esc(name)}</option>`).join("")||'<option value="">暂无显卡历史</option>'}</select><a href="${esc(historyQuery(true))}">导出 CSV ↓</a></div><p class="muted">${historyData.count} 条采样 · 缺失数据处断开 · 网络曲线使用当前网卡选择</p><div class="grid chart-grid" style="margin-top:18px">${keys.map(chartMarkup).join("")}</div>`;
 }
+// Fetch only; callers render. The response carries the revision of exactly that page.
+async function loadAlerts(next = alertPage) {
+  const request = ++alertRequest;
+  alertsLoading = true;
+  try {
+    const result = await api(`/api/alerts?page=${next}&page_size=20`);
+    if (request !== alertRequest) return false;
+    alertData = result; alertPage = result.page; alertRevision = result.revision;
+    return true;
+  } finally {
+    if (request === alertRequest) alertsLoading = false;
+  }
+}
+function alertMarkup() {
+  const a = alertData;
+  if (!a) return '<div class="empty">正在载入告警…</div>';
+  return `${a.items.length?a.items.map(event=>kv(event.time,event.message)).join(""):'<div class="empty">暂无告警，监控服务会持续监测。</div>'}<div class="alert-pagination"><span class="muted">共 ${a.total} 条 · 每页 ${a.page_size} 条</span><div class="alert-page-actions"><button class="quiet" data-action="alert-page" data-alert-page="${a.page-1}" ${a.page<=1?"disabled":""}>上一页</button><label class="muted">第 <select id="alert-page" aria-label="告警页码">${Array.from({length:a.pages},(_,i)=>`<option value="${i+1}" ${a.page===i+1?"selected":""}>${i+1}</option>`).join("")}</select> / ${a.pages} 页</label><button class="quiet" data-action="alert-page" data-alert-page="${a.page+1}" ${a.page>=a.pages?"disabled":""}>下一页</button><button class="quiet" data-action="latest-alerts">查看最新</button></div></div>`;
+}
 function renderInfo() {
   const h=hardware;
-  $("#content").innerHTML=`<div class="grid"><article class="card"><div class="section-title"><h2>硬件概览</h2><button class="quiet" data-action="refresh-info">刷新</button></div>${!h||h.loading?'<div class="empty">正在读取硬件信息…</div>':h.error?`<div class="empty">${esc(h.error)}</div>`:`${kv("整机",h.model)}${kv("操作系统",h.os)}${(h.details||[]).map(([name,lines])=>`<details data-fold="info-${esc(name)}"><summary><h3>${esc(name)}</h3></summary>${lines.map(line=>`<p class="muted" style="padding:8px 0">${esc(line)}</p>`).join("")}</details>`).join("")}`}</article><article class="card"><div class="section-title"><h2>诊断与运行状态</h2><button class="quiet" data-action="diagnostics">导出 JSON ↓</button></div>${kv("软件版本",state?.version||"—")}${kv("采集耗时",num(state?.data?.collection_ms," ms",1))}${kv("采集时间",state?.data?.sample_time?clock(state.data.sample_time):"—")}<p class="muted">报告包括硬件概览、当前读数和最近告警。配置密码不会导出。</p></article><article class="card span-all"><div class="section-title"><h2>最近告警</h2><span class="muted">本次运行 · 最近 100 条</span></div>${state?.alerts?.length?[...state.alerts].reverse().map(a=>kv(a.time,a.message)).join(""):'<div class="empty">暂无告警，监控服务会持续监测。</div>'}</article></div>`;
+  $("#content").innerHTML=`<div class="grid"><article class="card"><div class="section-title"><h2>硬件概览</h2><button class="quiet" data-action="refresh-info">刷新</button></div>${!h||h.loading?'<div class="empty">正在读取硬件信息…</div>':h.error?`<div class="empty">${esc(h.error)}</div>`:`${kv("整机",h.model)}${kv("操作系统",h.os)}${(h.details||[]).map(([name,lines])=>`<details data-fold="info-${esc(name)}"><summary><h3>${esc(name)}</h3></summary>${lines.map(line=>`<p class="muted" style="padding:8px 0">${esc(line)}</p>`).join("")}</details>`).join("")}`}</article><article class="card"><div class="section-title"><h2>诊断与运行状态</h2><button class="quiet" data-action="diagnostics">导出 JSON ↓</button></div>${kv("软件版本",state?.version||"—")}${kv("采集耗时",num(state?.data?.collection_ms," ms",1))}${kv("采集时间",state?.data?.sample_time?clock(state.data.sample_time):"—")}<p class="muted">报告包括硬件概览、当前读数和最近告警。配置密码不会导出。</p></article><article class="card span-all"><div class="section-title"><h2>最近告警</h2><span class="muted">保留最近 1000 条 · 重启后恢复</span></div>${alertMarkup()}</article></div>`;
 }
 function renderPage() {
   // Preserve expanded groups and scrollable terminal lists across live refreshes.
@@ -251,7 +270,7 @@ async function poll() {
     if(page==="settings" && tab==="access") await loadAccess();
     if(["overview","devices"].includes(page)) renderPage();
     if(page==="history" && Date.now()-lastHistory>15000) await loadHistory();
-    if(page==="info") {if(hardware?.loading) hardware=await api("/api/hardware"); renderPage();}
+    if(page==="info") {if(hardware?.loading) hardware=await api("/api/hardware"); if(!alertsLoading && alertPage===1 && alertRevision!==state.alerts_revision) await loadAlerts(); renderPage();}
   } catch(error) {
     if(active) {$("#connection").textContent="连接中断";$("#connection").classList.add("warn");notice("连接中断，当前为上次收到的数据。正在自动重试…");}
   } finally {polling=false;if(active) setTimeout(poll,Math.max(1000,(snapshot?.settings.interval||1)*1000));}
@@ -270,6 +289,8 @@ document.addEventListener("click", async event=>{
       case "toggle-device": {b.disabled=true; const routers=clone(snapshot.settings.routers); const d=routers.find(x=>x.id===b.dataset.id);d.enabled=!d.enabled;await saveChanges({routers});renderDevices();break;}
       case "reload-settings": if(!dirty||confirm("放弃修改并重新载入设置？")){snapshot=await api("/api/settings");dirty=false;notice("");renderSettings();}break;
       case "refresh-info": hardware=await api("/api/hardware?refresh=1");renderInfo();break;
+      case "alert-page": if(await loadAlerts(Number(b.dataset.alertPage)) && page==="info") renderPage(); break;
+      case "latest-alerts": if(await loadAlerts(1) && page==="info") renderPage(); break;
       case "approve": case "reject": b.disabled=true; await api(`/api/auth/${b.dataset.action}`,{id:b.dataset.id}); toast(b.dataset.action==="approve"?"已批准，对方页面会自动登录":"已拒绝该请求"); await loadAccess(); break;
       case "revoke": if(confirm("移除该设备？它需要重新配对才能访问。")){b.disabled=true;await api("/api/auth/revoke",{id:b.dataset.id});await loadAccess();} break;
       case "revoke-others": if(confirm("移除除本设备外的所有设备？")){b.disabled=true;await api("/api/auth/revoke",{id:"others"});toast("已移除其他设备");await loadAccess();} break;
@@ -281,6 +302,7 @@ document.addEventListener("click", async event=>{
 $("#content").addEventListener("input",event=>{if(event.target.closest("#settings-form")){dirty=true;$("#save-description").textContent="有未保存的修改";}});
 $("#content").addEventListener("change",async event=>{
   const t=event.target;
+  if(t.id==="alert-page") {try{if(await loadAlerts(Number(t.value)) && page==="info") renderPage();}catch(error){notice(error.message);}return;}
   if(t.id.startsWith("history-")) {if(t.id==="history-hours")hours=Number(t.value);if(t.id==="history-interval")chartInterval=t.value;if(t.id==="history-gpu")chartGpu=t.value;try{await loadHistory();}catch(error){notice(error.message);}}
 });
 $("#content").addEventListener("submit",async event=>{

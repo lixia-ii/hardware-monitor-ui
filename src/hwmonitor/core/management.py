@@ -1,6 +1,7 @@
 """Public configuration projection and strict, optimistic management updates."""
 import copy
 import hashlib
+import itertools
 import json
 import re
 
@@ -11,6 +12,30 @@ from hwmonitor.system.webbridge import WebError
 
 EDITABLE = {"close_action", "topmost", "interval", "gpu_id", "nic_ids", "display", "history_enabled",
             "alerts", "floating", "routers", "web"}
+
+
+def alerts_query(events, query):
+    """Validate web paging parameters; omitted or blank values use the defaults."""
+    values = {}
+    for key, default, limit in (("page", 1, 1000), ("page_size", 20, 100)):
+        raw = query.get(key, [str(default)])
+        if len(raw) != 1 or not re.fullmatch(r"[0-9]{1,4}", raw[0]) or not 1 <= int(raw[0]) <= limit:
+            raise WebError(400, "告警分页参数无效")
+        values[key] = int(raw[0])
+    return paginate(events, values["page"], values["page_size"])
+
+
+def paginate(events, page, size=20):
+    """Return only the requested page, newest first; clamp pages after retention.
+
+    Walks the deque from its tail, so the owner thread copies at most one page.
+    """
+    total = len(events)
+    pages = max(1, (total + size - 1) // size)
+    page = min(max(1, page), pages)
+    start = (page - 1) * size
+    items = list(itertools.islice(reversed(events), start, start + size))
+    return {"items": items, "page": page, "page_size": size, "total": total, "pages": pages}
 
 
 # The desktop rewrites the floating position on every drag or edge snap; keeping it

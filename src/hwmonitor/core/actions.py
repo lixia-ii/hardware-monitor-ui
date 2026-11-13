@@ -60,8 +60,13 @@ class ManagementActions:
             if revision is None or now - revision[0] > 2:
                 revision = self._state_revision = (now, management.revision(self.settings))
             return {"version": __version__, "time": time.time(), "data": cached[1],
-                    "revision": revision[1], "alerts": list(self.recent_alerts),
-                    "storage_error": self.collector.storage_error, **self._runtime_info()}
+                    "revision": revision[1], "alerts_revision": str(self.runtime.alert_revision),
+                    "storage_error": self.runtime.storage_error(self.collector),
+                    **self._runtime_info()}
+        if action == "alerts":
+            # The revision of exactly this page lets the browser skip refetching it.
+            return {**management.alerts_query(self.recent_alerts, payload or {}),
+                    "revision": str(self.runtime.alert_revision)}
         if action == "update_settings":
             self._web_flush_editors()
             self._validate_capabilities(payload)

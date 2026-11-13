@@ -88,7 +88,9 @@ class PresenceTests(unittest.TestCase):
         app.settings = {"routers": [dict(CONFIG, enabled=True)]}
         app.collector = Mock(device_events=queue.SimpleQueue())
         app.tray = Mock()
-        app.recent_alerts = []
+        from hwmonitor.core.runtime import RuntimeState
+        app.runtime = RuntimeState()
+        app.recent_alerts = app.runtime.recent_alerts
         app._flash = Mock()
         for name, online in (("A", True), ("B", False)):
             app.collector.device_events.put(dict(router_id="tp", name=name, online=online))
@@ -97,6 +99,7 @@ class PresenceTests(unittest.TestCase):
         message = app.tray.notify.call_args.args[1]
         self.assertIn("上线：A", message)
         self.assertIn("下线：B", message)
+        self.assertEqual(app.recent_alerts[-1]["message"], message)
         app.settings["routers"][0]["notify_clients"] = False
         app.collector.device_events.put(dict(router_id="tp", name="C", online=True))
         app._device_notifications()
