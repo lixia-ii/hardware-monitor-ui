@@ -7,24 +7,26 @@
 需要 Python 3.11+、venv、pip、Bash 和 util-linux（提供 flock）；无需 Tk、.NET 或图形会话。在独立目录解压或克隆项目后，一键后台启动：
 
 ```sh
-sh start.sh
-sh start.sh status
-sh start.sh stop
-sh start.sh restart
-sh start.sh logs
+sh start-linux.sh
+sh start-linux.sh status
+sh start-linux.sh stop
+sh start-linux.sh restart
+sh start-linux.sh logs
 ```
 
-首次运行自动创建项目内的 `.venv` 并联网安装依赖；以后复用环境，`pyproject.toml` 变化时自动重新安装。无需 sudo，等待服务就绪后返回命令行，关闭终端后继续运行；使用 `stop` 优雅退出，最多等待 30 秒，不强制杀进程。`status` 未运行时返回非零状态。`logs` 显示实时日志，Ctrl+C 只退出查看。Ubuntu / Debian 缺组件时执行 `sudo apt install python3-venv python3-pip util-linux`。可用 `PYTHON=python3.13 sh start.sh` 指定首次创建环境使用的 Python。
+首次运行自动创建项目内的 `.venv` 并联网安装依赖；以后复用环境，`pyproject.toml` 变化时自动重新安装。无需 sudo，等待服务就绪后返回命令行，关闭终端后继续运行；使用 `stop` 优雅退出，最多等待 30 秒，不强制杀进程。`status` 未运行时返回非零状态。`logs` 显示实时日志，Ctrl+C 只退出查看。Ubuntu / Debian 缺组件时执行 `sudo apt install python3-venv python3-pip util-linux`。可用 `PYTHON=python3.13 sh start-linux.sh` 指定首次创建环境使用的 Python。
 
-不带参数等同于 `start`，默认监听 `0.0.0.0:7076`，浏览器通过 `http://服务器IP:7076/` 访问；旧命令 `sh start.sh 1` 继续兼容。可以覆盖监听地址、端口或开启 NVIDIA 查询；`restart` 不带参数沿用上次参数，带参数则使用新的参数（未指定的项回到默认值）。`--check` 和 `--help` 在前台执行后退出，例如：
+不带参数等同于 `start`，管理端默认监听 `0.0.0.0:7076`，浏览器通过 `http://服务器IP:7076/` 访问；旧脚本名 `start.sh` 会转交给本脚本。可以通过 `--host`、`--port` 覆盖管理端监听地址及端口，或开启 NVIDIA 查询；`restart` 不带参数沿用上次参数，带参数则使用新的参数（未指定的项回到默认值）。
+
+兼容 `/data.json` 的传感器数据接口与桌面版相同，默认关闭，在网页管理端 **设置 → 常规** 中开关、修改端口（默认 8085，须与管理端口不同）和是否允许局域网访问；关闭局域网访问时只监听 `127.0.0.1`。端口被占用只在设置页和日志中提示，不影响管理端运行。旧启动参数中的 `--data-port` 会在下次启动时写入设置，之后不再沿用。`--check` 和 `--help` 在前台执行后退出，例如：
 
 ```sh
-sh start.sh --check
-sh start.sh start --nvidia
-sh start.sh restart --host 127.0.0.1 --port 8080
+sh start-linux.sh --check
+sh start-linux.sh start --nvidia
+sh start-linux.sh restart --host 127.0.0.1 --port 8080
 ```
 
-默认数据保存在项目的 `data/`，可用 `HARDWARE_MONITOR_DATA_DIR="$HOME/.local/share/hwmonitor" sh start.sh` 指定其他目录，重启时也需传入同样的环境变量。脚本从任意工作目录调用均可，管理状态及控制台日志固定保存在项目的 `data/launcher/`（`hwmonitor.pid`、启动参数、`startup.log`），每次启动保留一份上次日志 `startup.log.previous`。程序自身的滚动日志仍为数据目录下的 `monitor.log`。脚本通过管理锁避免并发操作，使用前核对 PID 的命令行和工作目录，丢失 PID 文件也能找回本项目的服务，包括之前以前台模式启动的实例。启动失败会显示日志，30 秒内未就绪则返回非零状态，保留仍在初始化的进程供 `status` / `logs` 检查。启动过程请等命令返回后再关闭终端。
+默认数据保存在项目的 `data/`，可用 `HARDWARE_MONITOR_DATA_DIR="$HOME/.local/share/hwmonitor" sh start-linux.sh` 指定其他目录，重启时也需传入同样的环境变量。脚本从任意工作目录调用均可，管理状态及控制台日志固定保存在项目的 `data/launcher/`（`hwmonitor.pid`、启动参数、`startup.log`），每次启动保留一份上次日志 `startup.log.previous`。程序自身的滚动日志仍为数据目录下的 `monitor.log`。脚本通过管理锁避免并发操作，使用前核对 PID 的命令行和工作目录，丢失 PID 文件也能找回本项目的服务，包括之前以前台模式启动的实例。启动失败会显示日志，30 秒内未就绪则返回非零状态，保留仍在初始化的进程供 `status` / `logs` 检查。启动过程请等命令返回后再关闭终端。
 
 本脚本不提供崩溃重启或开机自启；需要这些功能时使用下文的 systemd 安装方式，不要混用两套启动方式管理同一个实例。
 
@@ -42,7 +44,7 @@ Linux 直接运行 Python 默认进入前台服务器模式，管理端仅监听
 
 从电脑建立隧道 `ssh -L 7076:127.0.0.1:7076 user@server` 后，在浏览器打开 `http://127.0.0.1:7076`。
 
-可信内网可显式使用 `--host 0.0.0.0 --port 7076`；可选 `--data-port 8085` 开启同一采样快照的 `/data.json`，`--nvidia` 启用 NVIDIA 查询（需要驱动与 nvidia-smi）。管理端和数据端不能使用同一端口。当前监听参数支持 IPv4 地址。
+可信内网可显式使用 `--host 0.0.0.0 --port 7076`；`--nvidia` 启用 NVIDIA 查询（需要驱动与 nvidia-smi）。同一采样快照的 `/data.json` 在网页管理端 **设置 → 常规** 中开启，端口不能与管理端相同。当前监听参数支持 IPv4 地址。
 
 内存占用采用 total - available。默认网速采用一张默认路由接口，没有路由时选一张物理网卡；网页可手动选择，避免桥接与容器接口重复统计。预热、网卡断连、计数回退和选择变化时网速为空。温度/风扇从只读 hwmon 通道获取，以设备实际路径、芯片和通道标识；未知温度保留“其他温度”，未知风扇不作为 CPU 风扇告警。风扇的真实 0 RPM 保留。
 

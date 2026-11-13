@@ -1,4 +1,4 @@
-"""程序入口: python -m hwmonitor, 也可直接运行本文件 (start.bat、开机自启任务、UAC 提权重启都这样启动)。"""
+"""程序入口: python -m hwmonitor, 也可直接运行本文件 (start-windows.bat、开机自启任务、UAC 提权重启都这样启动)。"""
 import sys
 
 if __package__ in (None, "") and not getattr(sys, "frozen", False):

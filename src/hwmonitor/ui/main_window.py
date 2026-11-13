@@ -282,7 +282,7 @@ class MainWindow(WebManagementMixin, SettingsDialogMixin, CustomizeDialogMixin, 
         self._install(deps.install, done)
 
     def _apply_web(self):
-        """按设置启动/停止网页服务; 局域网开关或端口变化时更新防火墙规则。返回错误消息。"""
+        """按设置启动/停止传感器数据接口; 局域网开关或端口变化时更新防火墙规则。返回错误消息。"""
         web = self.settings["web"]
         error = self.web.apply(web["enabled"], web["lan"], web["port"])
         if error:
@@ -665,7 +665,7 @@ class MainWindow(WebManagementMixin, SettingsDialogMixin, CustomizeDialogMixin, 
     def _rate_labels(head, up, down, compact=False):
         """标题行右侧的 ↑ / ↓ 速率, 返回 {键: (数字标签, 单位标签)}。"""
         labels = {}
-        for key, arrow in ((up, "↑"), (down, "↓")):  # 从右往左排
+        for key, arrow in ((down, "↓"), (up, "↑")):  # 从右往左排, 上传显示在左侧
             # 单位小字、随量级变色, 数字粗体; 各自定宽, 位数或单位变化时不跳
             unit = tk.Label(head, text="", bg=CARD, fg=MUTED, font=(NUM, 8, "bold"), width=4, anchor="w")
             unit.pack(side="right", anchor="s", pady=(0, "1p"))

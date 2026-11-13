@@ -14,8 +14,8 @@ $taskWebAssets = Join-Path (Get-Location).Path 'src/hwmonitor/system/web'
 & ./.build/venv/Scripts/python.exe -m PyInstaller --noconfirm --onedir --uac-admin --windowed --noupx --name HardwareMonitorUI --workpath .build/work --specpath .build/spec --distpath dist --exclude-module setuptools --icon $taskIcon --paths src --add-data ($taskIcon + ':hwmonitor/ui/assets') --add-data ($taskWebAssets + ':hwmonitor/system/web') src/hwmonitor/__main__.py
 if ($LASTEXITCODE) { throw 'Build failed' }
 $app = 'dist/HardwareMonitorUI'
-Remove-Item -LiteralPath dist/HardwareMonitorUI.exe,dist/start.bat,dist/README.md,dist/LICENSE,dist/licenses,dist/LibreHardwareMonitor -Recurse -Force -ErrorAction SilentlyContinue  # 旧版单文件布局
-Copy-Item -LiteralPath start.bat,README.md,LICENSE -Destination $app
+Remove-Item -LiteralPath dist/HardwareMonitorUI.exe,dist/start.bat,dist/HardwareMonitorUI/start.bat,dist/README.md,dist/LICENSE,dist/licenses,dist/LibreHardwareMonitor -Recurse -Force -ErrorAction SilentlyContinue  # 旧版单文件布局及改名前的启动脚本
+Copy-Item -LiteralPath start-windows.bat,README.md,LICENSE -Destination $app
 Copy-Item -LiteralPath licenses -Destination $app -Recurse -Force
 # 硬件库放在 EXE 旁 (不打进 _internal), 便于按 LibreHardwareMonitor 新版本替换
 Copy-Item -LiteralPath vendor/LibreHardwareMonitor -Destination $app -Recurse -Force

@@ -56,7 +56,7 @@ class ConfigurationTests(unittest.TestCase):
         with self.assertRaises(WebError) as result:
             management.update(self.config, {"revision": "old", "changes": {"interval": 2}})
         self.assertEqual(result.exception.status, 409)
-        for changes in ({"management": {}}, {"web": {}}, {"interval": 0}, {"interval": True},
+        for changes in ({"management": {}}, {"web": {"port": 80}}, {"web": {"enabled": 1}}, {"web": {"host": "0.0.0.0"}}, {"interval": 0}, {"interval": True},
                         {"alerts": {"enabled": 1}}, {"floating": {"opacity": "0.7"}},
                         {"display": {"cpu_temp": {"visible": 0}}}, {"nic_ids": [None]},
                         {"gpu_id": 23}, {"alerts": {"cpu_temp": float("nan")}}):

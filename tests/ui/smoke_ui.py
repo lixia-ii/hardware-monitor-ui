@@ -42,7 +42,7 @@ def record_error(*args):
 
 
 original_read = reading.read
-with socket.socket() as probe:  # 网页服务用空闲端口, 不与本机已有服务冲突
+with socket.socket() as probe:  # 传感器数据接口用空闲端口, 不与本机已有服务冲突
     probe.bind(("127.0.0.1", 0))
     WEB_PORT = probe.getsockname()[1]
 with patch("hwmonitor.sensors.remote.Device.read", side_effect=lambda *args, **kwargs: remote.empty_reading()), patch("hwmonitor.core.collector.reading.read", side_effect=read), patch("hwmonitor.system.autostart.sync"), patch("hwmonitor.system.autostart.is_enabled", return_value=False), patch("hwmonitor.system.pawnio.status", return_value="ok"), patch("hwmonitor.settings.load", side_effect=lambda: settings.validate({"web": {"port": WEB_PORT}})):
@@ -299,7 +299,7 @@ with patch("hwmonitor.sensors.remote.Device.read", side_effect=lambda *args, **k
             assert app.settings["routers"][1]["type"] == "tplink"
             assert app.settings["routers"][1]["url"] == "http://192.168.0.1"
             assert len(router_rows("WAN 网卡")) == 1
-            notify_switch = router_rows("设备上下线提醒")[0].switch
+            notify_switch = router_rows("设备在线状态变更提醒")[0].switch
             assert app.settings["routers"][1].get("notify_clients", True)
             notify_switch.invoke()
             assert not app.settings["routers"][1]["notify_clients"]
@@ -342,7 +342,7 @@ with patch("hwmonitor.sensors.remote.Device.read", side_effect=lambda *args, **k
                 tree = box.terminal_tree
                 assert tree.get_children() == tuple(t["id"] for t in terminals)
                 assert tree.item(terminals[1]["id"], "text") == "2. 书房电脑", "Encoded terminal name reached UI"
-                assert tree.item(terminals[1]["id"], "values") == ("2.0 KB/s", "1.0 KB/s"), "Host rates got WAN scaling"
+                assert tree.item(terminals[1]["id"], "values") == ("1.0 KB/s", "2.0 KB/s"), "Host rates got WAN scaling"
                 tree.selection_set(terminals[1]["id"])
                 tree.event_generate("<<TreeviewSelect>>")
                 assert "192.0.2.10" in box.terminal_note.cget("text")
@@ -362,7 +362,7 @@ with patch("hwmonitor.sensors.remote.Device.read", side_effect=lambda *args, **k
                 app.root.update()
                 assert box.tplink_info.winfo_width() <= box.winfo_width()
                 assert tree.winfo_width() <= box.winfo_width(), "Ranking overflowed a narrow window"
-                assert sum(tree.column(key, "width") for key in ("#0", "down", "up")) <= tree.winfo_width(), "Upload column clipped in narrow window"
+                assert sum(tree.column(key, "width") for key in ("#0", "up", "down")) <= tree.winfo_width(), "Download column clipped in narrow window"
                 assert not box.terminal_scroll.winfo_manager(), "Short ranking displayed an unnecessary scrollbar"
                 many_terminals = [dict(terminals[0], id=f"host-{i}", name=f"设备 {i}") for i in range(13)]
                 app.render(dict(data, routers=[dict(online, terminals=many_terminals)]))
@@ -394,10 +394,10 @@ with patch("hwmonitor.sensors.remote.Device.read", side_effect=lambda *args, **k
             app.root.update()
             lan_switch = row_titled("general", "允许局域网访问").switch
             assert lan_switch.instate(["disabled"]) and app.web.server is None, "Web service should start disabled"
-            row_titled("general", "启用网页服务").switch.invoke()
+            row_titled("general", "启用传感器数据接口").switch.invoke()
             assert app.settings["web"]["enabled"] and lan_switch.instate(["!disabled"]) and app.web.server is not None
             assert f"127.0.0.1:{WEB_PORT}/data.json" in row_titled("general", "访问地址").desc.cget("text")
-            row_titled("general", "启用网页服务").switch.invoke()
+            row_titled("general", "启用传感器数据接口").switch.invoke()
             assert not app.settings["web"]["enabled"] and app.web.server is None
             topmost_switch = row_titled("general", "主窗口置顶").switch
             topmost_switch.invoke()
@@ -593,7 +593,7 @@ with patch("hwmonitor.sensors.remote.Device.read", side_effect=lambda *args, **k
             # 展开时标题行只留名称, 读数 (含网速) 都在下方; 收起后才显示徽标和网速摘要。
             for widget in (pc_box.cpu_usage, pc_box.gpu_usage, pc_box.header_rates, pc_widgets[0]):
                 assert not widget.winfo_manager(), "Expanded device header still shows readings"
-            assert pc_box._vals["net"].cget("text") == "↓ 2.0 KB/s  ↑ 1.0 KB/s"
+            assert pc_box._vals["net"].cget("text") == "↑ 1.0 KB/s  ↓ 2.0 KB/s"
             primary_box = app.router_widgets["primary"][0]
             assert app.router_widgets["primary"][1][2]["nic"].cget("text") == "eth0"
             pc_box.toggle()

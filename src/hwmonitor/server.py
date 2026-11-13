@@ -21,16 +21,16 @@ log = logging.getLogger(__name__)
 
 
 class Controller(ManagementActions):
-    def __init__(self, options, backend, host="127.0.0.1", port=7076, data_port=None):
+    def __init__(self, options, backend, host="127.0.0.1", port=7076):
         self.settings = options
         self.state = RuntimeState()
         self.history, self.recent_alerts = self.state.history, self.state.recent_alerts
         self.data, self.sensor_names = None, {}
-        self.web = WebServer(host=host)
+        self.web = WebServer()
         self.management = ManagementServer(host=host)
         self.web_bridge = self.management.bridge = Bridge()
         self.collector = Collector(options, web=self.web, backend=backend)
-        self.port, self.data_port = port, data_port
+        self.port = port
         self.stopping = threading.Event()
 
     def _runtime_info(self):
@@ -41,24 +41,41 @@ class Controller(ManagementActions):
         if isinstance(patch, dict) and set(patch) & {"floating", "topmost", "close_action"}:
             raise WebError(400, "服务器模式不支持桌面、托盘和悬浮窗设置")
 
+    def _management_port(self):
+        server = self.management.server
+        return server.server_address[1] if server else self.port
+
+    def _apply_web(self):
+        """Same switch as the desktop; a busy port is reported, never fatal to the service."""
+        web = self.settings["web"]
+        if web["enabled"] and web["port"] == self._management_port():
+            self.web.stop()
+            # Forget the old listener config so switching back to it starts again.
+            self.web.config, self.web.error = (False, False, 0), "传感器数据接口端口必须与网页管理端口不同"
+        else:
+            # Without LAN access stay on loopback; with it, follow the management listener's address.
+            self.web.host = self.management.host if web["lan"] else "127.0.0.1"
+            self.web.apply(web["enabled"], web["lan"], web["port"])
+        if self.web.error:
+            log.warning("%s", self.web.error)
+        elif web["enabled"]:
+            log.info("传感器数据接口：http://%s:%s/data.json", self.web.host, web["port"])
+
     def _web_flush_editors(self):
         pass
 
     def _commit_candidate(self, candidate):
-        self.settings = candidate
+        previous, self.settings = self.settings, candidate
         self.collector.configure(candidate)
+        if previous["web"] != candidate["web"]:
+            self._apply_web()
 
     def start(self):
-        if self.port == self.data_port:
-            raise ValueError("管理服务与数据服务端口必须不同")
         try:
             error = self.management.apply(True, self.port)
             if error:
                 raise OSError(error)
-            if self.data_port is not None:
-                error = self.web.apply(True, False, self.data_port)
-                if error:
-                    raise OSError(error)
+            self._apply_web()
             self.collector.start()
             log.info("硬件监控启动成功 [HWMONITOR_READY]；管理地址：http://%s:%s/", self.management.host, self.port)
             if self.management.host == "0.0.0.0":
@@ -168,10 +185,15 @@ def main(args):
             except ValueError:
                 config.replace(config.with_name("settings.json.corrupt"))
             options = settings.load(config)
+            if args.data_port is not None:
+                # Legacy command line: move it into the setting the management page controls.
+                options["web"] = {**options["web"], "enabled": True, "lan": True, "port": args.data_port}
+                settings.save(options)
+                log.warning("--data-port 已写入设置，之后请在网页管理端「设置 → 常规」修改传感器数据接口")
             with tempfile.TemporaryFile(dir=paths.DATA) as probe:
                 probe.write(b"check")
             from hwmonitor.sensors.linux import LinuxBackend
-            controller = Controller(options, LinuxBackend(enable_nvidia=args.nvidia), args.host, args.port, args.data_port)
+            controller = Controller(options, LinuxBackend(enable_nvidia=args.nvidia), args.host, args.port)
             def stop(signum, frame):
                 controller.stopping.set()
             signal.signal(signal.SIGTERM, stop)

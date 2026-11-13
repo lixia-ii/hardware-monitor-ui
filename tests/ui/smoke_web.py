@@ -118,6 +118,18 @@ with patch("hwmonitor.settings.load", return_value=config), patch("hwmonitor.cor
             assert app.collector.options["interval"] == 2
             assert app.web.server is not None and app.management.server is not None
             assert app.settings["web"]["port"] == data_port
+            # The data endpoint is switched from the web page like the desktop setting.
+            def web(changes):
+                return app._web_dispatch("update_settings", {"revision": management.revision(app.settings), "changes": {"web": changes}})
+            try:
+                web({"port": management_port})
+                raise AssertionError("data port equal to the management port accepted")
+            except WebError as error:
+                assert error.status == 400
+            assert web({"enabled": False})["settings"]["web"]["enabled"] is False
+            assert app.web.server is None
+            assert web({"enabled": True})["web_error"] is None
+            assert app.web.server is not None
             app.show_settings()
             texts = []
             def walk(widget):

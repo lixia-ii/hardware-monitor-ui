@@ -197,7 +197,7 @@ class Sensors:
         self.error = None
         self.deferred = False  # DEFERRED 里的硬件是否还没启用
         self.deferred_thread = None
-        self.last_tree = None  # 最近一次成功采样, 供网页服务发布
+        self.last_tree = None  # 最近一次成功采样, 供传感器数据接口发布
         self.reopen = threading.Event()
 
     @property

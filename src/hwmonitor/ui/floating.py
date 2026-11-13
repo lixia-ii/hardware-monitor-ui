@@ -328,13 +328,13 @@ class FloatingWindow(tk.Toplevel):
         cells.grid(row=0, column=1, columnspan=3, sticky="ew")
         cells.columnconfigure((0, 1), weight=1, uniform="net")
         out = []
-        for col, (arrow, color) in enumerate((("↓", "#22d3ee"), ("↑", "#fb923c"))):
+        for col, (arrow, color) in enumerate((("↑", "#fb923c"), ("↓", "#22d3ee"))):
             cell = tk.Frame(cells, bg=CARD)
             cell.grid(row=0, column=col, sticky="e")
             tk.Label(cell, text=arrow, bg=CARD, fg=color, font=(NUM, 9, "bold")).pack(side="left", anchor="s")
             out.append(self._pair(cell, (NUM, 9, "bold"), (NUM, 7), ""))
             out[-1].pack(side="left", anchor="s", padx=("1p", 0))
-        return SimpleNamespace(frame=row, down=out[0], up=out[1])
+        return SimpleNamespace(frame=row, up=out[0], down=out[1])
 
     def _layout(self):
         shown = [k for k in ("cpu", "gpu", "mem", "net") if self.options.get(f"show_{k}", True)]
@@ -445,7 +445,7 @@ class FloatingWindow(tk.Toplevel):
                 self._settle(*self.pos, save=False)  # 高度变了, 贴底边时重新收回屏幕内
 
     def apply_options(self, before):
-        """选项在别处 (手机管理端) 被修改后, 按右键菜单相同的方式让已打开的窗口立即生效。"""
+        """选项在别处 (网页管理端) 被修改后, 按右键菜单相同的方式让已打开的窗口立即生效。"""
         for key in ("topmost", "autohide", "opacity", "show_mem", "show_net"):
             if self.options.get(key) != before.get(key):
                 if key in getattr(self, "_vars", {}):

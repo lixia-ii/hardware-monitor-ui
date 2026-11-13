@@ -301,8 +301,8 @@ class SettingsDialogMixin:
         row.switch.state(["disabled"])  # 查询到实际状态前不可操作
         self._background(row, autostart.is_enabled, loaded)
 
-        group = self._group(page, "网页服务")
-        web_row = self._row(group, "启用网页服务", "提供与 LibreHardwareMonitor 兼容的 data.json 接口，供其他程序读取传感器数据")
+        group = self._group(page, "传感器数据接口")
+        web_row = self._row(group, "启用传感器数据接口", "提供与 LibreHardwareMonitor 兼容的 data.json 接口，供其他程序读取传感器数据")
         lan_row = self._row(group, "允许局域网访问", "同一局域网的设备可通过本机 IP 访问；会添加仅限本地子网的防火墙规则")
         port_row = self._row(group, "端口", "1024–65535")
         url_row = self._row(group, "访问地址", "")
@@ -315,10 +315,10 @@ class SettingsDialogMixin:
             if error:
                 self._row_message(url_row, error, error=True)
             else:
-                self._row_message(url_row, "\n".join(urls) if web["enabled"] else "开启网页服务后可用")
+                self._row_message(url_row, "\n".join(urls) if web["enabled"] else "开启传感器数据接口后可用")
         def save(**changes):
             if changes.get("port") == self.settings["management"]["port"]:
-                self._row_message(url_row, "内网数据端口必须与手机管理端口不同。", error=True)
+                self._row_message(url_row, "传感器数据接口端口必须与网页管理端口不同。", error=True)
                 return
             self._save_option("web", {**self.settings["web"], **changes})
             refresh(self.web.error)
@@ -329,7 +329,7 @@ class SettingsDialogMixin:
         self._management_controls(page)
 
     def _management_controls(self, page):
-        group = self._group(page, "手机管理端")
+        group = self._group(page, "网页管理端")
         cfg = self.settings["management"]
         status_row = self._row(group, "管理地址", "")
         def refresh(error=None):
@@ -341,13 +341,13 @@ class SettingsDialogMixin:
         def save(**changes):
             current = {**self.settings["management"], **changes}
             if current["port"] == self.settings["web"]["port"]:
-                refresh("管理端口必须与内网数据端口不同。")
+                refresh("管理端口必须与传感器数据接口端口不同。")
                 return
             self._save_option("management", current)
             refresh(self.management.error)
-        row = self._row(group, "启用手机管理端", "默认端口 7076，启用后同一局域网的设备可直接访问")
+        row = self._row(group, "启用网页管理端", "默认端口 7076，启用后同一局域网的设备可直接访问")
         self._switch(row, cfg["enabled"], lambda on: save(enabled=on))
-        row = self._row(group, "管理端口", "1024–65535，与内网数据端口独立")
+        row = self._row(group, "管理端口", "1024–65535，与传感器数据接口端口独立")
         self._number(row, cfg["port"], 1024, 65535, "", lambda v: save(port=v))
         refresh(self.management.error)
 
@@ -482,8 +482,8 @@ class SettingsDialogMixin:
                   "密码由 Windows 加密保存，仅当前 Windows 用户可读取；复制到其他电脑后需重新输入。\n"
                   "适配 TL-XDR3040 易展版的登录与 WAN 接口；登录失败后停止重试，重新输入密码再连接。")
         self._row(group, "接入远程电脑",
-                  "1. 在对方电脑打开“硬件监控”，进入 设置 → 常规 → 网页服务\n"
-                  "2. 开启“启用网页服务”和“允许局域网访问”\n"
+                  "1. 在对方电脑打开“硬件监控”，进入 设置 → 常规 → 传感器数据接口\n"
+                  "2. 开启“启用传感器数据接口”和“允许局域网访问”\n"
                   "3. 加入设备后，在下方设备内选择“远程电脑”，填写对方显示的地址，例如 http://192.168.1.2:8085/data.json，开启监控")
         self._row(group, "接入 OpenWrt 数据接口",
                   "1. 安装 prometheus-node-exporter-lua 和 prometheus-node-exporter-lua-thermal（温度）\n"
@@ -631,7 +631,7 @@ class SettingsDialogMixin:
         entry.bind("<FocusOut>", save_url)
         self._finish_edit(entry, save_url)
         if is_tplink:
-            notify_row = self._row(group, "设备上下线提醒", "终端状态持续变化后通过托盘提醒；首次连接和路由器重连时不提醒")
+            notify_row = self._row(group, "设备在线状态变更提醒", "终端状态持续变化后通过托盘提醒；首次连接和路由器重连时不提醒")
             self._switch(notify_row, cfg.get("notify_clients", True), lambda on: save(notify_clients=on))
             password_row = field("管理员密码", "已加密保存 · 留空保留原密码" if cfg.get("password_protected") else "输入路由器管理密码后连接，密码将加密保存在本机", stacked=True)
             password = tk.StringVar()
@@ -709,7 +709,7 @@ class SettingsDialogMixin:
         group = self._group(page, "关于")
         self._row(group, f"硬件监控 {__version__}",
                   "基于开源项目 LibreHardwareMonitor 开发，内置其硬件读取库 LibreHardwareMonitorLib（MPL-2.0）"
-                  "和 PawnIO 驱动安装程序（GPL-2.0）；界面、网页服务和数据整理由本程序实现。")
+                  "和 PawnIO 驱动安装程序（GPL-2.0）；界面、传感器数据接口和数据整理由本程序实现。")
 
     def _save_option(self, key, value):
         self.settings[key] = value

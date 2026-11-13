@@ -14,7 +14,7 @@ class WebManagementMixin(ManagementActions):
         web = self.settings["web"]
         if cfg["enabled"] and web["enabled"] and cfg["port"] == web["port"]:
             self.management.stop()
-            error = "手机管理端口必须与内网数据服务端口不同"
+            error = "网页管理端口必须与传感器数据接口端口不同"
         else:
             error = self.management.apply(cfg["enabled"], cfg["port"])
         if error:
@@ -72,6 +72,8 @@ class WebManagementMixin(ManagementActions):
                 self.show_floating()
         elif self.float_win is not None:
             self.hide_floating()
+        if previous["web"] != candidate["web"]:
+            self._apply_web()
         self._apply_display()
         if self.data:
             self.render(self.data)

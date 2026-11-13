@@ -1,4 +1,4 @@
-"""主界面的设备卡片 (OpenWrt / 远程电脑 / TP-Link): 单行标题、详情、终端流量榜和上下线提醒。"""
+"""主界面的设备卡片 (OpenWrt / 远程电脑 / TP-Link): 单行标题、详情、终端流量榜和在线状态变更提醒。"""
 import queue
 import time
 import tkinter as tk
@@ -29,11 +29,11 @@ class DeviceCardsMixin:
                     parts.append(title + "：" + shown + (f" 等 {len(names)} 台" if len(names) > 4 else ""))
             message = configs[ident]["name"] + " · " + "；".join(parts)
             self.recent_alerts.append({"time": time.strftime("%Y-%m-%d %H:%M:%S"), "message": message})
-            if not self.tray.notify("设备上下线", message, warning=False):
+            if not self.tray.notify("设备在线状态变更", message, warning=False):
                 self._flash(message)
 
     def _device_header(self, box, kind):
-        """单行标题: 箭头 | 名称 (弹性占宽, 过长省略) | 利用率徽标 | 分隔线 | ↓ ↑ 网速。
+        """单行标题: 箭头 | 名称 (弹性占宽, 过长省略) | 利用率徽标 | 分隔线 | ↑ ↓ 网速。
         徽标和网速使用固定字符宽度, 多台设备上下对齐; 离线提示占用第二个徽标的位置, 不挤占名称。"""
         from tkinter import font
         head = box.head
@@ -68,8 +68,8 @@ class DeviceCardsMixin:
         rates_frame.grid(row=0, column=4, sticky="e")
         box.header_rates = rates_frame
         rates = {}
-        keys = ("net_down", "net_up") if kind == "hwmonitor" else ("down_rate", "up")
-        for column, (key, arrow) in enumerate(zip(keys, ("↓", "↑"))):
+        keys = ("net_up", "net_down") if kind == "hwmonitor" else ("up", "down_rate")
+        for column, (key, arrow) in enumerate(zip(keys, ("↑", "↓"))):
             group = tk.Frame(rates_frame, bg=CARD)
             group.grid(row=0, column=column, padx=(0 if column == 0 else "4p", 0))
             tk.Label(group, text=arrow, bg=CARD, fg=SUB, font=(NUM, 8)).pack(side="left")
@@ -293,11 +293,11 @@ class DeviceCardsMixin:
             box.terminal_range.pack(side="right")
             box.terminal_panel = tk.Frame(box, bg=CARD)
             box.terminal_panel.pack(fill="x")
-            tree = ttk.Treeview(box.terminal_panel, columns=("down", "up"), style="Router.Treeview",
+            tree = ttk.Treeview(box.terminal_panel, columns=("up", "down"), style="Router.Treeview",
                                 show="tree headings", selectmode="browse", height=1)
             tree.heading("#0", text="设备", anchor="w")
             tree.column("#0", width=1, minwidth=0, stretch=False)
-            for key, label in (("down", "↓ 下载"), ("up", "↑ 上传")):
+            for key, label in (("up", "↑ 上传"), ("down", "↓ 下载")):
                 tree.heading(key, text=label, anchor="e")
                 tree.column(key, width=1, minwidth=0, stretch=False, anchor="e")
             scroll = ttk.Scrollbar(box.terminal_panel, orient="vertical", style="Thin.Vertical.TScrollbar", command=tree.yview)
@@ -332,12 +332,12 @@ class DeviceCardsMixin:
             from tkinter import font
             name_font = font.Font(font=(FONT, 8))
             def fit_columns(_=None):
-                # 按控件实际宽度分配, 避免 Treeview 的默认最小列宽把上传列挤出窗口。
+                # 按控件实际宽度分配, 避免 Treeview 的默认最小列宽把下载列挤出窗口。
                 available = max(3, tree.winfo_width() - 2)
                 rate_width = min(box.winfo_pixels("65p"), available // 3)
                 name_width = available - 2 * rate_width
                 tree.column("#0", width=name_width)
-                for key in ("down", "up"):
+                for key in ("up", "down"):
                     tree.column(key, width=rate_width)
                 for index, ident in enumerate(tree.get_children()):
                     terminal = box.terminal_data.get(ident)
@@ -366,7 +366,7 @@ class DeviceCardsMixin:
                 tree.delete(ident)
         for index, terminal in enumerate(terminals or []):
             ident = terminal["id"]
-            values = tuple(" ".join(fmt_rate(terminal.get(key))[:2]).strip() for key in ("down_rate", "up"))
+            values = tuple(" ".join(fmt_rate(terminal.get(key))[:2]).strip() for key in ("up", "down_rate"))
             if not tree.exists(ident):
                 tree.insert("", "end", iid=ident)
             tree.item(ident, text=f"{index + 1}. {terminal['name']}", values=values,
@@ -385,11 +385,11 @@ class DeviceCardsMixin:
 
     @staticmethod
     def _rate_text(d, down, up):
-        """展开内容里的网速行: "↓ 52 KB/s  ↑ 5.1 KB/s", 都没有数据时为 "--"。"""
+        """展开内容里的网速行: "↑ 5.1 KB/s  ↓ 52 KB/s", 都没有数据时为 "--"。"""
         if d.get(down) is None and d.get(up) is None:
             return "--"
         parts = []
-        for key, arrow in ((down, "↓"), (up, "↑")):
+        for key, arrow in ((up, "↑"), (down, "↓")):
             num, unit, _ = fmt_rate(d.get(key))
             parts.append(f"{arrow} {num} {unit}".rstrip())
         return "  ".join(parts)

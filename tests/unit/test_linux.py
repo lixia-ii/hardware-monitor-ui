@@ -4,6 +4,7 @@ import http.client
 import importlib.util
 import json
 from pathlib import Path
+import socket
 import subprocess
 import sys
 import tempfile
@@ -128,9 +129,7 @@ class LinuxTests(unittest.TestCase):
 
     def test_controller_http_persistence_failure_conflict_and_shutdown(self):
         with patch.object(paths, "DATA", self.root):
-            controller = Controller(settings.validate({"interval": .5}), self.backend, port=0, data_port=0)
-            # Allocate each listener independently; real collisions are separately tested.
-            controller.data_port = None
+            controller = Controller(settings.validate({"interval": .5}), self.backend, port=0)
             failures = []
             def run():
                 try:
@@ -163,6 +162,31 @@ class LinuxTests(unittest.TestCase):
                 update = {"revision": management.revision(controller.settings), "changes": {"topmost": True}}
                 self.assertEqual(request("POST", "/api/settings", update)[0], 400)
                 self.assertEqual(settings.load()["interval"], 2)
+                # The data endpoint is a setting controlled from the management page.
+                self.assertIsNone(controller.web.server)
+                def web(changes):
+                    current = json.loads(request("GET", "/api/settings")[1])
+                    return request("POST", "/api/settings", {"revision": current["revision"], "changes": {"web": changes}})
+                self.assertEqual(web({"enabled": True, "port": port})[0], 400)
+                self.assertEqual(web({"enabled": 1})[0], 400)
+                with socket.socket() as occupied:
+                    occupied.bind(("127.0.0.1", 0))
+                    occupied.listen()
+                    busy = occupied.getsockname()[1]
+                    with self.assertLogs("hwmonitor.server", "WARNING"):
+                        status, raw = web({"enabled": True, "port": busy})
+                    self.assertEqual(status, 200)
+                    self.assertIn(str(busy), json.loads(raw)["web_error"])
+                    self.assertEqual(request("GET", "/api/state")[0], 200)
+                with socket.socket() as probe:
+                    probe.bind(("127.0.0.1", 0))
+                    data_port = probe.getsockname()[1]
+                status, raw = web({"port": data_port})
+                self.assertIsNone(json.loads(raw)["web_error"])
+                self.assertEqual(controller.web.server.server_address, ("127.0.0.1", data_port))
+                self.assertTrue(settings.load()["web"]["enabled"])
+                self.assertEqual(web({"enabled": False})[0], 200)
+                self.assertIsNone(controller.web.server)
                 with patch("hwmonitor.sensors.hwinfo.load", return_value={"cpu": "test"}):
                     for route in ("/api/state", "/api/history", "/api/history.csv", "/api/diagnostics"):
                         status, raw = request("GET", route)

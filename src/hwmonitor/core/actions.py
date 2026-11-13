@@ -19,11 +19,16 @@ class ManagementActions:
     def _validate_capabilities(self, payload):
         pass
 
+    def _management_port(self):
+        cfg = self.settings["management"]
+        return cfg["port"] if cfg["enabled"] else None
+
     def _web_settings(self):
         return {"settings": management.public_settings(self.settings), "revision": management.revision(self.settings),
                 "names": {**METRIC_NAMES, **{k: v for k, v in GROUP_NAMES.items() if k != "router"},
                           **{"router:" + d["id"]: d["name"] for d in self.settings["routers"]}, **self.sensor_names},
-                "gpus": (self.data or {}).get("gpus", []), "nics": (self.data or {}).get("nics", []), **self._runtime_info()}
+                "gpus": (self.data or {}).get("gpus", []), "nics": (self.data or {}).get("nics", []),
+                "web_error": self.web.error, **self._runtime_info()}
 
     def _hardware_future(self, refresh=False):
         """One shared background hardware inventory; refresh starts a new one only after the last finished."""
@@ -61,6 +66,9 @@ class ManagementActions:
             self._web_flush_editors()
             self._validate_capabilities(payload)
             candidate = management.update(self.settings, payload)
+            web = candidate["web"]
+            if web["enabled"] and web["port"] == self._management_port():
+                raise WebError(400, "传感器数据接口端口必须与网页管理端口不同")
             # Persist before publishing the new state; a failed write changes nothing.
             try:
                 settings.save(candidate)

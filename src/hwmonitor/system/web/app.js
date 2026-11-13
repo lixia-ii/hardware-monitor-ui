@@ -73,11 +73,11 @@ function renderOverview() {
   const gpuRows = {gpu_load:metric("gpu_load",d.gpu_load," %")+(visible("gpu_load")?meter(d.gpu_load,true):""),gpu_fan:metric("gpu_fan",d.gpu_fan != null?num(d.gpu_fan," RPM"):num(d.gpu_fan_pct," %"),"",true),gpu_mem_load:metric("gpu_mem_load",d.gpu_mem_load," %")};
   const gpuCard = `<article class="card"><div class="card-head"><h2>${visible("gpu_temp")?title("gpu_temp"):"显卡"}</h2><span class="muted" title="${esc(d.gpu_name)}">${esc(d.gpu_name || "GPU")}</span></div>${visible("gpu_temp")?`<div class="hero-row"><div class="hero-number ${d.gpu_temp>=80?"hot":"blue"}">${num(d.gpu_temp)}<small>°C</small></div></div>`:""}${sortedKeys(Object.keys(gpuRows)).map(k=>gpuRows[k]).join("")}${visible("gpu_mem_load")?kv("显存容量",memory(d.gpu_mem_used,d.gpu_mem_total)):""}</article>`;
   const memoryCard = `<article class="card"><div class="card-head"><h2>${title("mem_load")}</h2><span class="muted">RAM</span></div><div class="hero-row"><div class="hero-number">${num(d.mem_load)}<small>%</small></div></div>${meter(d.mem_load)}${kv("已用 / 总量",memory(d.mem_used,d.mem_total))}</article>`;
-  const networkCard = `<article class="card"><div class="card-head"><h2>${title("network","网络")}</h2><span class="muted">实时速率</span></div><div class="metric-pair"><div><span class="card-label">↓ 下载</span><div class="hero-number blue">${esc(rate(d.net_down))}</div></div><div><span class="card-label">↑ 上传</span><div class="hero-number green">${esc(rate(d.net_up))}</div></div></div></article>`;
+  const networkCard = `<article class="card"><div class="card-head"><h2>${title("network","网络")}</h2><span class="muted">实时速率</span></div><div class="metric-pair"><div><span class="card-label">↑ 上传</span><div class="hero-number green">${esc(rate(d.net_up))}</div></div><div><span class="card-label">↓ 下载</span><div class="hero-number blue">${esc(rate(d.net_down))}</div></div></div></article>`;
   c.innerHTML = `<div class="grid overview"><article class="card"><div class="card-head"><h2>${visible("cpu_temp")?title("cpu_temp"):"CPU"}</h2><span class="muted">处理器</span></div>${visible("cpu_temp")?`<div class="hero-row"><div class="hero-number ${d.cpu_temp>=80?"hot":"green"}">${num(d.cpu_temp)}<small>°C</small></div></div>`:""}${sortedKeys(Object.keys(cpuRows)).map(k=>cpuRows[k]).join("")}</article>${gpuCard}${visible("mem_load")?memoryCard:""}${visible("network")?networkCard:""}</div><div class="section-title"><h2>传感器详情</h2><span class="muted">按已保存的显示偏好展示</span></div><div class="stack">${sensorGroups(d)||'<div class="card empty">暂无其他可见传感器</div>'}</div><div class="section-title"><h2>连接的设备</h2><a href="#devices" class="muted">管理设备 ↗</a></div><div class="grid">${deviceCards(false)}</div>`;
 }
 function remoteMetrics(d) {
-  return ["cpu_temp","cpu_load","gpu_temp","gpu_load","mem_load","gpu_mem_load","cpu_fan"].map(k=>kv(labels[k],num(d[k],k.endsWith("temp")?" °C":k.endsWith("fan")?" RPM":" %"))).join("")+kv("显卡风扇",d.gpu_fan!=null?num(d.gpu_fan," RPM"):num(d.gpu_fan_pct," %"))+kv("内存",memory(d.mem_used,d.mem_total))+kv("显存",memory(d.gpu_mem_used,d.gpu_mem_total))+kv("下载 / 上传",`${rate(d.net_down)} / ${rate(d.net_up)}`);
+  return ["cpu_temp","cpu_load","gpu_temp","gpu_load","mem_load","gpu_mem_load","cpu_fan"].map(k=>kv(labels[k],num(d[k],k.endsWith("temp")?" °C":k.endsWith("fan")?" RPM":" %"))).join("")+kv("显卡风扇",d.gpu_fan!=null?num(d.gpu_fan," RPM"):num(d.gpu_fan_pct," %"))+kv("内存",memory(d.mem_used,d.mem_total))+kv("显存",memory(d.gpu_mem_used,d.gpu_mem_total))+kv("上传 / 下载",`${rate(d.net_up)} / ${rate(d.net_down)}`);
 }
 function deviceCards(editable) {
   const devices = snapshot?.settings.routers || [], latest = state?.data?.routers || [];
@@ -89,9 +89,9 @@ function deviceCards(editable) {
     let body = "";
     if (cfg.enabled && d && !d.offline) {
       if (kind === "hwmonitor") body = remoteMetrics(d);
-      else if (kind === "tplink") body = kv("WAN 联网",d.wan_connected===true?"已联网":d.wan_connected===false?"未联网":"未知")+kv("WAN IP",d.wan_ip || "—")+kv("WAN 在线时长",duration(d.wan_uptime))+kv("在线设备",num(d.clients))+kv("下载 / 上传",`${rate(d.down_rate)} / ${rate(d.up)}`);
-      else body = kv("温度",num(d.temp," °C"))+kv("CPU 利用率",num(d.cpu_load," %"))+kv("内存",`${num(d.mem_load," %")} · ${memory(d.mem_used,d.mem_total)}`)+kv("负载",num(d.load1,"",2))+kv("运行时长",duration(d.uptime))+kv("WAN 网卡",d.nic || "—")+kv("下载 / 上传",`${rate(d.down_rate)} / ${rate(d.up)}`);
-      if (kind === "tplink") body += `<details data-fold="${esc(cfg.id)}-clients"><summary><h3>终端流量排行</h3></summary>${d.terminals == null?'<div class="empty">终端信息暂不可用</div>':`<div class="table-wrap"><table><thead><tr><th>终端 / 地址</th><th>下载</th><th>上传</th></tr></thead><tbody>${d.terminals.map(t=>`<tr><td>${esc(t.name || t.id)}<small>${esc(t.ip)} · ${esc(t.id)}</small></td><td>${esc(rate(t.down_rate))}</td><td>${esc(rate(t.up))}</td></tr>`).join("")}</tbody></table></div>`}</details>`;
+      else if (kind === "tplink") body = kv("WAN 联网",d.wan_connected===true?"已联网":d.wan_connected===false?"未联网":"未知")+kv("WAN IP",d.wan_ip || "—")+kv("WAN 在线时长",duration(d.wan_uptime))+kv("在线设备",num(d.clients))+kv("上传 / 下载",`${rate(d.up)} / ${rate(d.down_rate)}`);
+      else body = kv("温度",num(d.temp," °C"))+kv("CPU 利用率",num(d.cpu_load," %"))+kv("内存",`${num(d.mem_load," %")} · ${memory(d.mem_used,d.mem_total)}`)+kv("负载",num(d.load1,"",2))+kv("运行时长",duration(d.uptime))+kv("WAN 网卡",d.nic || "—")+kv("上传 / 下载",`${rate(d.up)} / ${rate(d.down_rate)}`);
+      if (kind === "tplink") body += `<details data-fold="${esc(cfg.id)}-clients"><summary><h3>终端流量排行</h3></summary>${d.terminals == null?'<div class="empty">终端信息暂不可用</div>':`<div class="table-wrap"><table><thead><tr><th>终端 / 地址</th><th>上传</th><th>下载</th></tr></thead><tbody>${d.terminals.map(t=>`<tr><td>${esc(t.name || t.id)}<small>${esc(t.ip)} · ${esc(t.id)}</small></td><td>${esc(rate(t.up))}</td><td>${esc(rate(t.down_rate))}</td></tr>`).join("")}</tbody></table></div>`}</details>`;
       if (kind === "hwmonitor") body += sensorGroups(d,cfg.id+":");
     } else body = '<p class="muted">'+(cfg.enabled?'设备连接后显示实时读数。':'启用监控后开始采集此设备的数据。')+'</p>';
     return `<article class="card"><div class="section-title"><div class="device-title"><span class="device-icon">${kind==="hwmonitor"?"▣":"⌘"}</span><div><h2>${title("router:"+cfg.id,cfg.name)}</h2><small>${esc({openwrt:"OpenWrt",tplink:"TP-Link",hwmonitor:"远程电脑"}[kind])} · ${esc(cfg.url)}</small></div></div><span class="device-status ${online?"":"off"}">${esc(status)}</span></div><div class="device-body">${body}</div>${editable?`<div class="device-actions"><button data-action="edit-device" data-id="${esc(cfg.id)}">编辑设备</button><button data-action="toggle-device" data-id="${esc(cfg.id)}">${cfg.enabled?"暂停监控":"启用监控"}</button></div>`:""}</article>`;
@@ -104,6 +104,10 @@ function inputRow(label, key, value, options = {}) {
   if (choices) control = `<select name="${esc(key)}">${choices.map(([v,n])=>`<option value="${esc(v)}" ${String(value??"")===String(v)?"selected":""}>${esc(n)}</option>`).join("")}</select>`;
   else control = `<input name="${esc(key)}" type="${type}" ${type==="checkbox"?(value?"checked":""):`value="${esc(value)}"`} ${min!=null?`min="${min}"`:""} ${max!=null?`max="${max}"`:""} ${type==="number"?`step="${step}"`:""} ${type==="number"?"required":""}>`;
   return `<div class="form-row"><label for="f-${esc(key)}">${esc(label)}${description?`<small>${esc(description)}</small>`:""}</label>${control.replace('name=',`id="f-${esc(key)}" name=`)}</div>`;
+}
+function dataApiRows(w, desktop) {
+  const host=w.lan?location.hostname:"127.0.0.1";
+  return inputRow("传感器数据接口","web.enabled",w.enabled,{type:"checkbox",description:"与 LibreHardwareMonitor 兼容的只读 /data.json，无登录认证"})+inputRow("允许局域网访问","web.lan",w.lan,{type:"checkbox",description:desktop?"自动添加仅允许本地子网的防火墙规则":"关闭时仅服务器本机可访问"})+inputRow("数据接口端口","web.port",w.port,{min:1024,max:65535,description:"1024–65535，须与管理端口不同"})+kv("数据接口地址",w.enabled?`http://${host}:${w.port}/data.json`:"未开启")+(snapshot.web_error?`<p class="error">${esc(snapshot.web_error)}</p>`:"");
 }
 function renderSettings() {
   const s = snapshot.settings;
@@ -128,9 +132,9 @@ function renderSettings() {
     Object.keys(s.display).forEach(k=>{if(!names[k]) names[k]=k+"（已断连）";});
     body=`<p class="muted">名称、顺序和显示状态保存到监控服务；顺序数值越小越靠前。</p><div class="display-row display-head"><span>项目</span><span>自定义名称</span><span>顺序</span><span>显示</span></div>`+Object.entries(names).map(([key,name])=>`<div class="display-row" data-pref="${esc(key)}"><label>${esc(name)}</label><input aria-label="${esc(name)}名称" data-prop="name" maxlength="60" value="${esc(s.display[key]?.name||"")}" placeholder="默认名称"><input aria-label="${esc(name)}顺序" data-prop="order" type="number" min="0" max="10000" step="1" required value="${s.display[key]?.order??100}"><input aria-label="显示${esc(name)}" data-prop="visible" type="checkbox" ${s.display[key]?.visible===false?"":"checked"}></div>`).join("");
   } else {
-    body=inputRow("电脑主窗口置顶","topmost",s.topmost,{type:"checkbox"})+inputRow("关闭电脑主窗口时","close_action",s.close_action,{choices:[["ask","每次询问"],["tray","最小化到托盘"],["exit","退出软件"]]})+inputRow("保存历史到电脑","history_enabled",s.history_enabled,{type:"checkbox",description:"关闭后仍保留本次运行的内存历史"})+`<div class="notice">管理端的端口和开关在电脑端配置。开机启动及驱动安装请在电脑端操作。</div>${kv("当前管理地址",location.origin)}${kv("连接协议",location.protocol.replace(":", "").toUpperCase())}`;
+    body=dataApiRows(s.web,desktop)+inputRow("电脑主窗口置顶","topmost",s.topmost,{type:"checkbox"})+inputRow("关闭电脑主窗口时","close_action",s.close_action,{choices:[["ask","每次询问"],["tray","最小化到托盘"],["exit","退出软件"]]})+inputRow("保存历史到电脑","history_enabled",s.history_enabled,{type:"checkbox",description:"关闭后仍保留本次运行的内存历史"})+`<div class="notice">管理端的端口和开关在电脑端配置。开机启动及驱动安装请在电脑端操作。</div>${kv("当前管理地址",location.origin)}${kv("连接协议",location.protocol.replace(":", "").toUpperCase())}`;
   }
-  if (!desktop && tab === "general") body=inputRow("保存历史到服务器","history_enabled",s.history_enabled,{type:"checkbox",description:"关闭后仍保留本次运行的内存历史"})+`<div class="notice">监听地址、端口和自启动通过服务器命令行或 systemd 配置。</div>${kv("当前管理地址",location.origin)}`;
+  if (!desktop && tab === "general") body=dataApiRows(s.web,desktop)+inputRow("保存历史到服务器","history_enabled",s.history_enabled,{type:"checkbox",description:"关闭后仍保留本次运行的内存历史"})+`<div class="notice">管理端的监听地址、端口和自启动通过服务器命令行或 systemd 配置。</div>${kv("当前管理地址",location.origin)}`;
   $("#content").innerHTML=`<div class="tabs" role="tablist">${Object.entries(tabs).map(([id,label])=>`<button role="tab" aria-selected="${tab===id}" class="${tab===id?"selected":""}" data-tab="${id}">${label}</button>`).join("")}</div><form id="settings-form"><div class="card">${body}</div><div class="form-actions"><p class="muted" id="save-description">修改后保存并应用</p><button type="button" data-action="reload-settings">重新载入</button><button type="submit" class="primary">保存设置</button></div><p id="settings-error" class="error" role="alert"></p></form>`;
 }
 function formChanges(form) {
@@ -155,7 +159,7 @@ function formChanges(form) {
     if (tab==="monitor") changes.nic_ids=form.elements.nic_mode.value==="auto"?null:$$('[name=nic]:checked',form).map(x=>x.value);
   }
   for (const key of Object.keys(changes)) {
-    if (["floating","alerts","display"].includes(key)) {
+    if (["floating","alerts","display","web"].includes(key)) {
       for (const sub of Object.keys(changes[key])) if (JSON.stringify(changes[key][sub])===JSON.stringify(s[key][sub])) delete changes[key][sub];
       if (!Object.keys(changes[key]).length) delete changes[key];
     } else if (JSON.stringify(changes[key])===JSON.stringify(s[key])) delete changes[key];
@@ -164,11 +168,11 @@ function formChanges(form) {
 }
 async function saveChanges(changes, revision = snapshot.revision) {
   snapshot = await api("/api/settings",{revision,changes});
-  dirty=false; toast("已保存并应用"); notice("");
+  dirty=false; toast(changes.web&&snapshot.web_error?"已保存，但"+snapshot.web_error:"已保存并应用"); notice("");
 }
 function deviceFields(cfg) {
   const kind=cfg.type||"openwrt";
-  $("#device-fields").innerHTML=inputRow("设备名称","name",cfg.name,{type:"text"})+inputRow("设备类型","type",kind,{choices:[["openwrt","OpenWrt 路由器"],["tplink","TP-Link 原厂路由器"],["hwmonitor","远程电脑"]]})+inputRow("设备地址","url",cfg.url,{type:"url",description:kind==="tplink"?"例如 http://192.168.0.1":kind==="hwmonitor"?"例如 http://192.168.1.2:8085/data.json":"例如 http://192.168.1.1:9100/metrics"})+inputRow("启用监控","enabled",cfg.enabled,{type:"checkbox"})+(kind==="tplink"?inputRow("管理员密码","password","",{type:"password",description:cfg.password_saved?"已保存，留空保留原密码；修改地址后需重新输入":"仅写入，加密保存在监控主机"})+inputRow("设备上下线提醒","notify_clients",cfg.notify_clients!==false,{type:"checkbox"})+inputRow("重新连接","reconnect",false,{type:"checkbox",description:"登录失败后可勾选，使用已保存密码重试"}):kind==="openwrt"?inputRow("WAN 网卡","nic",cfg.nic||"",{type:"text",description:"留空自动选择，例如 pppoe-wan"}):"");
+  $("#device-fields").innerHTML=inputRow("设备名称","name",cfg.name,{type:"text"})+inputRow("设备类型","type",kind,{choices:[["openwrt","OpenWrt 路由器"],["tplink","TP-Link 原厂路由器"],["hwmonitor","远程电脑"]]})+inputRow("设备地址","url",cfg.url,{type:"url",description:kind==="tplink"?"例如 http://192.168.0.1":kind==="hwmonitor"?"例如 http://192.168.1.2:8085/data.json":"例如 http://192.168.1.1:9100/metrics"})+inputRow("启用监控","enabled",cfg.enabled,{type:"checkbox"})+(kind==="tplink"?inputRow("管理员密码","password","",{type:"password",description:cfg.password_saved?"已保存，留空保留原密码；修改地址后需重新输入":"仅写入，加密保存在监控主机"})+inputRow("设备在线状态变更提醒","notify_clients",cfg.notify_clients!==false,{type:"checkbox"})+inputRow("重新连接","reconnect",false,{type:"checkbox",description:"登录失败后可勾选，使用已保存密码重试"}):kind==="openwrt"?inputRow("WAN 网卡","nic",cfg.nic||"",{type:"text",description:"留空自动选择，例如 pppoe-wan"}):"");
   $("#device-form [name=name]").maxLength=60;
   $("#device-form [name=name]").required=true;
   $("#device-form [name=url]").required=true;
@@ -198,7 +202,7 @@ function chartMarkup(key) {
 }
 function renderHistory() {
   if (!historyData) return;
-  const keys=["cpu_temp","gpu_temp","cpu_load","gpu_load","mem_load","gpu_mem_load","net_down","net_up"];
+  const keys=["cpu_temp","gpu_temp","cpu_load","gpu_load","mem_load","gpu_mem_load","net_up","net_down"];
   $("#content").innerHTML=`<div class="chart-controls"><select id="history-hours" aria-label="时间范围"><option value="1" ${hours===1?"selected":""}>最近 1 小时</option><option value="24" ${hours===24?"selected":""}>最近 24 小时</option></select><select id="history-interval" aria-label="显示间隔">${[["auto","自动间隔"],["0","原始数据"],["30","30 秒"],["60","1 分钟"],["300","5 分钟"],["900","15 分钟"]].map(([v,n])=>`<option value="${v}" ${chartInterval===v?"selected":""}>${n}</option>`).join("")}</select><select id="history-gpu" aria-label="历史显卡">${historyData.gpus.map(([id,name])=>`<option value="${esc(id)}" ${historyData.gpu===id?"selected":""}>${esc(name)}</option>`).join("")||'<option value="">暂无显卡历史</option>'}</select><a href="${esc(historyQuery(true))}">导出 CSV ↓</a></div><p class="muted">${historyData.count} 条采样 · 缺失数据处断开 · 网络曲线使用当前网卡选择</p><div class="grid chart-grid" style="margin-top:18px">${keys.map(chartMarkup).join("")}</div>`;
 }
 function renderInfo() {

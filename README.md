@@ -7,14 +7,14 @@
 本项目是在开源项目 [LibreHardwareMonitor](https://github.com/LibreHardwareMonitor/LibreHardwareMonitor) 的基础上开发的。程序内置并直接调用它的硬件读取库 `LibreHardwareMonitorLib`,不需要再单独安装或启动 LibreHardwareMonitor,运行时只有本程序一个进程。
 
 - **复用的部分**:CPU、显卡、主板、内存、硬盘、网卡等全部硬件的识别与传感器读取,均由 `LibreHardwareMonitorLib` 完成(内置 0.9.6 版官方发布的程序集,未做修改)。本项目通过 [pythonnet](https://github.com/pythonnet/pythonnet) 在进程内加载它。
-- **本项目实现的部分**:界面、告警、历史、悬浮窗、网页服务,以及把传感器整理成与 LibreHardwareMonitor `data.json` 相同的结构(格式参照其源码 `HttpServer.cs` / `SensorNode.cs`)。
+- **本项目实现的部分**:界面、告警、历史、悬浮窗、传感器数据接口,以及把传感器整理成与 LibreHardwareMonitor `data.json` 相同的结构(格式参照其源码 `HttpServer.cs` / `SensorNode.cs`)。
 - **PawnIO 驱动**:读取 CPU 温度和主板风扇需要 PawnIO 驱动。程序附带官方安装程序 `PawnIO_setup.exe`(作者 namazso,来自 LibreHardwareMonitor 仓库,[GPL-2.0](licenses/PawnIO-GPL-2.0.txt),源码 https://github.com/namazso/PawnIO),检测到未安装时提示安装。
 - LibreHardwareMonitor 开源地址:https://github.com/LibreHardwareMonitor/LibreHardwareMonitor ,版权归原作者所有,以 [MPL-2.0](licenses/LibreHardwareMonitor-MPL-2.0.txt) 许可证发布。
 - 升级硬件库:从上面的仓库下载新版本,用其中的 `LibreHardwareMonitorLib.dll` 及其依赖程序集覆盖 `vendor/LibreHardwareMonitor/`(便携包中为 EXE 旁的 `LibreHardwareMonitor/`)里的同名文件。
 
 ## 使用
 
-1. 双击 `start.bat`(或直接运行 `HardwareMonitorUI.exe`)。读取硬件需要管理员权限,界面会请求一次 UAC 确认:
+1. 双击 `start-windows.bat`(或直接运行 `HardwareMonitorUI.exe`)。读取硬件需要管理员权限,界面会请求一次 UAC 确认:
    - 启动后在后台初始化硬件传感器(约几秒),期间提示条显示"正在初始化硬件传感器…";
    - 首次运行若未安装 PawnIO 驱动,会询问是否安装(见下文);
    - 退出时关闭硬件库、释放驱动,不会残留其他进程。
@@ -22,12 +22,12 @@
 
 主窗口大小和位置由你决定并自动记住，下次启动恢复（原显示器已断开时回到主屏居中）；读数、分组出现或收起都不会改变窗口大小。底部工具栏（设置、历史、硬件信息）固定在窗口底部；主窗口置顶在 **设置 → 常规** 或托盘右键菜单中切换，下次启动恢复，卡片区内容超出时右侧浮出细滚动条，可用鼠标滚轮滚动，滚动条出现与否都不改变卡片宽度。路由器、机箱风扇、水冷泵及各温度分组点击标题行（左侧箭头）即可收起，收起后标题行右侧仍显示摘要（如最高温度、风扇转速范围）。多显卡时点击显卡卡片右上角的型号标签，从下拉菜单中选择要显示的显卡。尺寸随系统 DPI 缩放。
 3. **设置 → 常规 → 开机自动启动**:登录后自动在托盘运行并开始监控。通过任务计划程序(任务名 `HardwareMonitorUI`,以最高权限运行)实现,开启或关闭时确认一次 UAC,之后开机不再弹出。移动程序目录后,下次启动会自动修正任务里的路径。
-4. 源码运行需要 Python 3.11 以上（推荐 3.13），首次运行前在仓库根目录执行 `pip install -e .` 安装依赖 pythonnet（用于加载 .NET 硬件库，系统需有 Windows 10/11 自带的 .NET Framework 4.7.2 以上）；之后运行 `start.bat`，或 `python -m hwmonitor`。便携 EXE 已内置，无需安装 Python。
-5. **设置 → 常规 → 网页服务**（默认关闭）：开启后在 `http://127.0.0.1:8085/data.json` 提供与 LibreHardwareMonitor 网页服务格式相同的数据，原来接 LibreHardwareMonitor 的工具可直接使用；端口可改。再打开 **允许局域网访问** 后，同一局域网的设备可通过 `http://本机IP:端口/data.json` 访问，设置页会列出可用地址；程序会添加一条仅允许本地子网访问的防火墙规则，关闭时自动删除。接口只读。
+4. 源码运行需要 Python 3.11 以上（推荐 3.13），首次运行前在仓库根目录执行 `pip install -e .` 安装依赖 pythonnet（用于加载 .NET 硬件库，系统需有 Windows 10/11 自带的 .NET Framework 4.7.2 以上）；之后运行 `start-windows.bat`，或 `python -m hwmonitor`。便携 EXE 已内置，无需安装 Python。
+5. **设置 → 常规 → 传感器数据接口**（默认关闭）：开启后在 `http://127.0.0.1:8085/data.json` 提供与 LibreHardwareMonitor 网页服务格式相同的数据，原来接 LibreHardwareMonitor 的工具可直接使用；端口可改。再打开 **允许局域网访问** 后，同一局域网的设备可通过 `http://本机IP:端口/data.json` 访问，设置页会列出可用地址；程序会添加一条仅允许本地子网访问的防火墙规则，关闭时自动删除。接口只读。
 
-## iPhone 网页管理端
+## 网页管理端
 
-进入 **设置 → 常规 → 手机管理端**，打开 **启用手机管理端**。默认管理端口为 **7076**，可以修改；启用后默认允许局域网访问，不需要额外打开局域网开关。手机与电脑连接同一局域网，在 Safari 打开 `http://电脑局域网IP:7076/` 即可直接进入，电脑端设置页会列出可用地址。
+进入 **设置 → 常规 → 网页管理端**，打开 **启用网页管理端**。默认管理端口为 **7076**，可以修改；启用后默认允许局域网访问，不需要额外打开局域网开关。手机与电脑连接同一局域网，在 Safari 打开 `http://电脑局域网IP:7076/` 即可直接进入，电脑端设置页会列出可用地址。
 
 管理端与原有内网 `/data.json` 服务（默认 **8085**）分别监听、分别启停，使用不同防火墙规则；两个服务的端口必须不同。管理端监听 `0.0.0.0`，自动添加仅允许本地子网访问的防火墙规则，关闭后删除自己的规则。当前管理端使用 HTTP，无证书配置和登录鉴权。为防止 DNS 重绑定，管理端只接受用 IP 地址或 `localhost` 访问，使用主机名（如 `mypc.lan:7076`）会被拒绝。
 
@@ -52,18 +52,18 @@
 
 适配 TL-XDR3040 易展版使用的原厂登录与 `/ds` 状态接口，无需刷机或安装服务。进入 **设置 → 设备 → 加入设备**，选择 **TP-Link（原厂固件）**，填写管理地址（例如 `http://192.168.0.1`），在 **管理员密码** 中输入管理密码，点击 **保存并连接**，会自动开启监控。密码框留空时点击按钮会使用已保存的密码重连，输入新密码则替换旧密码；修改管理地址后已保存的密码会被清除，需要重新输入，避免把密码发给新地址。
 
-密码由 Windows DPAPI 加密后保存在配置中，仅当前 Windows 用户可读取；复制配置到其他电脑或用户后需要重新输入。密码和登录会话不放入采集数据、网页服务或诊断报告。登录失败后停止自动重试，重新输入密码或点击 **保存并连接** 再试。
+密码由 Windows DPAPI 加密后保存在配置中，仅当前 Windows 用户可读取；复制配置到其他电脑或用户后需要重新输入。密码和登录会话不放入采集数据、传感器数据接口或诊断报告。登录失败后停止自动重试，重新输入密码或点击 **保存并连接** 再试。
 
 设备卡片显示连接状态、WAN 联网状态、WAN 在线时长、IP、在线设备数和 WAN 上下行速度（字节/秒）。WAN 在线时长来自本次 WAN 连接的 `up_time`，与路由器开机时长不同；连接中、断开或异常会在卡片上明确显示，收起卡片也能看到断线提示。指标取决于固件提供的数据，缺失时显示 `--`；当前适配不提供 CPU、内存和温度。WAN 网速跟随 **设置 → 监控 → 刷新间隔**（默认 1 秒，最快 0.5 秒），断线清空旧读数并退避重试，最长间隔 30 秒。已在 TL-XDR3040 易展版上验证真实登录、WAN 读数与在线设备表，其他型号和固件版本未保证兼容。
 
-- **终端流量排行**：展开路由器卡片，在下方查看终端的实时下载和上传速度，按两者之和降序排列；选择终端可查看名称和 IP。列表最多显示 6 行，可滚动查看其余终端。终端表和设备数量每 2 秒更新一次（全局刷新更慢时跟随全局节奏），与 WAN 网速分开采集。读取终端失败时显示不可用，不继续显示旧排行。
-- **设备上下线提醒**：默认开启，可在该路由器的设置中单独关闭。按 MAC 地址识别终端，状态变化持续至少 3 秒并经后续有效采样确认后，用 Windows 托盘提醒；同批变化合并为一条消息。首次启动、关闭后重新开启提醒、路由器断连或终端表读取失败后的恢复，均重新建立基准，不集中提醒所有终端上下线。托盘不可用时在主界面提示条显示。提醒需要程序持续运行，检测时间还取决于路由器更新终端表的速度。
+- **终端流量排行**：展开路由器卡片，在下方查看终端的实时上传和下载速度，按两者之和降序排列；选择终端可查看名称和 IP。列表最多显示 6 行，可滚动查看其余终端。终端表和设备数量每 2 秒更新一次（全局刷新更慢时跟随全局节奏），与 WAN 网速分开采集。读取终端失败时显示不可用，不继续显示旧排行。
+- **设备在线状态变更提醒**：默认开启，可在该路由器的设置中单独关闭。按 MAC 地址识别终端，状态变化持续至少 3 秒并经后续有效采样确认后，用 Windows 托盘提醒；同批变化合并为一条消息。首次启动、关闭后重新开启提醒、路由器断连或终端表读取失败后的恢复，均重新建立基准，不集中提醒所有终端上下线。托盘不可用时在主界面提示条显示。提醒需要程序持续运行，检测时间还取决于路由器更新终端表的速度。
 
 该固件的 WAN `up_speed` / `down_speed` 单位是 KB/s（1024 字节），程序先乘以 1024 再使用统一的网速格式显示；在线设备表的同名字段则是 B/s，两者单位不同。WAN 统计与本机网卡的范围、采样时刻不同，短时数值可能不同。
 
 ### 远程电脑
 
-1. 在对方电脑启动“硬件监控”，进入 **设置 → 常规 → 网页服务**，开启 **启用网页服务** 和 **允许局域网访问**。
+1. 在对方电脑启动“硬件监控”，进入 **设置 → 常规 → 传感器数据接口**，开启 **启用传感器数据接口** 和 **允许局域网访问**。
 2. 在本机 **设置 → 设备** 点击 **加入设备**，展开新增设备后将 **设备类型** 设为 **远程电脑**。
 3. 填写对方电脑显示的地址，例如 `http://192.168.1.8:8085/data.json`（只填 `http://IP:端口` 会自动补全 `/data.json`），打开 **显示设备状态**。
 
@@ -113,7 +113,7 @@ uci commit prometheus-node-exporter-lua
 
 ## 便携程序与开发验证
 
-便携包解压后运行 `start.bat` 或 `HardwareMonitorUI.exe` 即可，目录为 `HardwareMonitorUI.exe`、`_internal/`（Python 运行时）、`LibreHardwareMonitor/`（硬件库）、`licenses/` 和运行后生成的 `data/`。移动时保留整个目录；任务计划程序同时兼容源码与 EXE。
+便携包解压后运行 `start-windows.bat` 或 `HardwareMonitorUI.exe` 即可，目录为 `HardwareMonitorUI.exe`、`_internal/`（Python 运行时）、`LibreHardwareMonitor/`（硬件库）、`licenses/` 和运行后生成的 `data/`。移动时保留整个目录；任务计划程序同时兼容源码与 EXE。
 
 在 Windows PowerShell 中构建（首次需要联网下载构建依赖）：
 
@@ -129,7 +129,7 @@ python tests/ui/smoke_ui.py                    # 界面集成测试
 ./dist/HardwareMonitorUI/HardwareMonitorUI.exe --self-test   # 打包后自检
 ```
 
-GUI 集成测试使用隔离数据和模拟传感器，覆盖主界面、17,280 个历史点、设置（含网页服务）、自定义、悬浮窗、导出和退出；硬件库的数据转换、网页服务和 PawnIO 检测用模拟对象测试，不依赖真实硬件。EXE 自检使用独立实例标识，检查 .NET 硬件库能否加载（不打开硬件），在 EXE 旁的 `.build/self-test/self-test.json` 写入结果后自动退出。GitHub Actions 在 Windows 上执行测试和构建，可从工作流产物下载便携包。
+GUI 集成测试使用隔离数据和模拟传感器，覆盖主界面、17,280 个历史点、设置（含传感器数据接口）、自定义、悬浮窗、导出和退出；硬件库的数据转换、传感器数据接口和 PawnIO 检测用模拟对象测试，不依赖真实硬件。EXE 自检使用独立实例标识，检查 .NET 硬件库能否加载（不打开硬件），在 EXE 旁的 `.build/self-test/self-test.json` 写入结果后自动退出。GitHub Actions 在 Windows 上执行测试和构建，可从工作流产物下载便携包。
 
 ## 首次运行的 PawnIO 提示
 
@@ -157,7 +157,8 @@ GUI 集成测试使用隔离数据和模拟传感器，覆盖主界面、17,280 
 
 ```text
 hardware-monitor-ui/
-├─ start.bat                 日常启动入口
+├─ start-windows.bat         Windows 启动入口
+├─ start-linux.sh            Linux 启动与管理入口
 ├─ pyproject.toml            项目信息、版本来源与依赖（运行 / 构建）
 ├─ README.md  LICENSE        使用说明、本项目 MIT 许可证
 ├─ src/hwmonitor/            应用代码（Python 包）
@@ -166,7 +167,7 @@ hardware-monitor-ui/
 │  ├─ paths.py  settings.py  目录位置；设置的默认值、校验与保存
 │  ├─ core/                  业务逻辑：采集线程、告警、历史、诊断
 │  ├─ sensors/               数据来源：硬件库封装、读数解析、nvidia-smi、路由器、硬件信息
-│  ├─ system/                系统集成：提权、开机自启、托盘、PawnIO、网页服务
+│  ├─ system/                系统集成：提权、开机自启、托盘、PawnIO、传感器数据接口
 │  └─ ui/                    界面：主窗口、悬浮窗、设置/自定义/历史/信息窗口、主题、图标
 ├─ vendor/LibreHardwareMonitor/  内置第三方程序集（LibreHardwareMonitorLib 0.9.6 等）与 PawnIO_setup.exe，原样存放
 ├─ licenses/                 第三方许可证（LibreHardwareMonitor、PawnIO）
@@ -183,7 +184,7 @@ hardware-monitor-ui/
 └─ .build/                   构建环境、中间文件、自检数据，不提交 Git
 ```
 
-平时只需运行根目录的 `start.bat`。代码结构和模块依赖关系见 [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md)，功能计划见 [docs/PLAN.md](docs/PLAN.md)。设置和历史已集中到 `data/`；旧布局的数据在启动取得单实例锁后自动迁移，新目录已有数据时不覆盖。构建和测试不会再在根目录生成数据库、日志或 spec 文件。
+平时只需运行根目录的 `start-windows.bat`。代码结构和模块依赖关系见 [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md)，功能计划见 [docs/PLAN.md](docs/PLAN.md)。设置和历史已集中到 `data/`；旧布局的数据在启动取得单实例锁后自动迁移，新目录已有数据时不覆盖。构建和测试不会再在根目录生成数据库、日志或 spec 文件。
 
 ## 许可证
 
@@ -193,16 +194,16 @@ hardware-monitor-ui/
 
 已加入无桌面服务器模式，支持 CPU、内存、网速、可读温度/风扇、历史、告警与网页设备管理。NVIDIA 按需使用 `--nvidia`。
 
-在项目根目录执行 `sh start.sh` 即可后台启动，默认监听 `0.0.0.0:7076`，浏览器打开 `http://服务器IP:7076/`。首次自动创建虚拟环境并联网安装依赖，之后复用环境（需要 Python 3.11+、venv、pip、Bash 和 util-linux）。关闭终端后继续运行，数据保存在项目的 `data/`。管理命令：
+在项目根目录执行 `sh start-linux.sh` 即可后台启动，管理端默认监听 `0.0.0.0:7076`，浏览器打开 `http://服务器IP:7076/`。兼容 `/data.json` 的传感器数据接口与桌面版相同，默认关闭，在网页管理端 **设置 → 常规** 中开关、修改端口（默认 8085）和是否允许局域网访问。首次自动创建虚拟环境并联网安装依赖，之后复用环境（需要 Python 3.11+、venv、pip、Bash 和 util-linux）。关闭终端后继续运行，数据保存在项目的 `data/`。管理命令：
 
 ```sh
-sh start.sh start       # 启动，省略 start 也可以；兼容旧的 sh start.sh 1
-sh start.sh stop        # 关闭
-sh start.sh status      # 状态及 PID
-sh start.sh restart     # 重启，沿用上次参数
-sh start.sh logs        # 实时日志，Ctrl+C 仅停止查看
+sh start-linux.sh start       # 启动，省略 start 也可以
+sh start-linux.sh stop        # 关闭
+sh start-linux.sh status      # 状态及 PID
+sh start-linux.sh restart     # 重启，沿用上次参数
+sh start-linux.sh logs        # 实时日志，Ctrl+C 仅停止查看
 ```
 
-可指定参数，例如 `sh start.sh start --host 127.0.0.1 --port 8080`；`sh start.sh --check` 仍为前台环境检查。管理端没有登录认证，请用于可信内网。直接运行 `python -m hwmonitor --headless` 或 systemd 模式仍默认仅本机访问。
+可指定参数，例如 `sh start-linux.sh start --host 127.0.0.1 --port 8080`；旧的 `start.sh` 会转交给 `start-linux.sh`。旧启动参数中的 `--data-port` 会在下次启动时写入设置并开启数据接口，之后不再沿用，改由网页管理端控制；`sh start-linux.sh --check` 仍为前台环境检查。管理端没有登录认证，请用于可信内网。直接运行 `python -m hwmonitor --headless` 或 systemd 模式仍默认仅本机访问。
 
 安装、systemd、访问与备份见 [Linux 部署说明](docs/LINUX.md)。Ubuntu 实机、24 小时运行与升级回退仍待验收。

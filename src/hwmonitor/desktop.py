@@ -46,7 +46,7 @@ def desktop_main():
                 ctypes.windll.shcore.SetProcessDpiAwareness(1)
             except Exception:
                 pass
-    if not tray.acquire_single_instance():  # 已在运行 (如开机自启后又双击了 start.bat): 唤出那个窗口后退出
+    if not tray.acquire_single_instance():  # 已在运行 (如开机自启后又双击了 start-windows.bat): 唤出那个窗口后退出
         sys.exit(0)
     if "--self-test" not in sys.argv:
         try:

@@ -1,6 +1,7 @@
 """Exercise the launcher against real Linux processes, HTTP and occupied ports."""
 import fcntl
 import http.client
+import json
 import os
 from pathlib import Path
 import shutil
@@ -22,6 +23,7 @@ def free_port():
 
 with tempfile.TemporaryDirectory(prefix="hwmonitor launcher ") as directory:
     app = Path(directory)
+    shutil.copy(ROOT / "start-linux.sh", app)
     shutil.copy(ROOT / "start.sh", app)
     shutil.copy(ROOT / "pyproject.toml", app)
     venv = app / ".venv"
@@ -33,21 +35,21 @@ with tempfile.TemporaryDirectory(prefix="hwmonitor launcher ") as directory:
     state = app / "data/launcher"
     pid_file = state / "hwmonitor.pid"
 
-    def run(*args, expected=0):
-        result = subprocess.run(["sh", str(app / "start.sh"), *args], env=env,
+    def run(*args, expected=0, script="start-linux.sh"):
+        result = subprocess.run(["sh", str(app / script), *args], env=env,
                                 cwd="/", text=True, capture_output=True, timeout=45)
         print(result.stdout, end="")
         print(result.stderr, end="", file=sys.stderr)
         assert result.returncode == expected, (args, result.returncode, result.stdout, result.stderr)
         return result.stdout
 
-    def request(port):
+    def request(port, path="/api/state"):
         conn = http.client.HTTPConnection("127.0.0.1", port, timeout=3)
         try:
-            conn.request("GET", "/api/state")
+            conn.request("GET", path)
             response = conn.getresponse()
             assert response.status == 200, response.status
-            response.read()
+            return json.loads(response.read())
         finally:
             conn.close()
 
@@ -69,15 +71,34 @@ with tempfile.TemporaryDirectory(prefix="hwmonitor launcher ") as directory:
         assert "[HWMONITOR_READY]" in (state / "startup.log").read_text()
         assert "0.0.0.0" in (state / "startup.log").read_text()
         request(port)
+        # The data endpoint is a setting and stays off until enabled.
+        assert not request(port, "/api/settings")["settings"]["web"]["enabled"]
         run("start")
         assert pid_file.read_text() == first, "duplicate start changed PID"
         # Discover the process even when the cache is gone.
         pid_file.unlink()
         run("status")
         assert pid_file.read_text() == first
+        # The old script name forwards every command.
+        run("status", script="start.sh")
+        # A legacy --data-port in saved arguments is moved into the settings once, then not replayed.
+        data_port = free_port()
+        while data_port == port:
+            data_port = free_port()
+        (state / "arguments").write_bytes(f"--host\x000.0.0.0\x00--port\x00{port}\x00--data-port\x00{data_port}\x00".encode())
         run("restart")
         assert pid_file.read_text() != first
         request(port)
+        assert "Children" in request(data_port, "/data.json")
+        assert b"--data-port" not in (state / "arguments").read_bytes()
+        run("restart")
+        assert "Children" in request(data_port, "/data.json")
+        assert request(port, "/api/settings")["settings"]["web"] == {"enabled": True, "lan": True, "port": data_port}
+        # A management port equal to the data port is reported, not fatal.
+        run("restart", "--port", str(data_port))
+        assert request(data_port, "/api/settings")["web_error"]
+        run("restart", "--port", str(port))
+        assert "Children" in request(data_port, "/data.json")
         run("stop")
         run("status", expected=1)
         run("stop")

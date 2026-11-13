@@ -10,7 +10,7 @@ from hwmonitor.system import credentials
 from hwmonitor.system.webbridge import WebError
 
 EDITABLE = {"close_action", "topmost", "interval", "gpu_id", "nic_ids", "display", "history_enabled",
-            "alerts", "floating", "routers"}
+            "alerts", "floating", "routers", "web"}
 
 
 # The desktop rewrites the floating position on every drag or edge snap; keeping it
@@ -40,7 +40,7 @@ def update(config, payload):
         raise WebError(400, "包含不支持的设置")
     candidate = copy.deepcopy(config)
     for key, value in patch.items():
-        if key in ("alerts", "floating", "display"):
+        if key in ("alerts", "floating", "display", "web"):
             if not isinstance(value, dict) or (key != "display" and set(value) - (set(config[key]) - DESKTOP_ONLY.get(key, set()))):
                 raise WebError(400, "设置字段无效")
             if key == "display":

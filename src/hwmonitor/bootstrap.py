@@ -9,7 +9,8 @@ def main(argv=None):
     parser.add_argument("--check", action="store_true", help="检查环境和采集能力后退出")
     parser.add_argument("--host", default="127.0.0.1", help="后台监听 IPv4 地址，默认仅本机")
     parser.add_argument("--port", type=int, default=7076, help="后台管理端口")
-    parser.add_argument("--data-port", type=int, help="启用兼容 data.json 服务的端口")
+    # Legacy: the data endpoint is now a setting; this only migrates an old command line into it.
+    parser.add_argument("--data-port", type=int, help=argparse.SUPPRESS)
     parser.add_argument("--nvidia", action="store_true", help="启用可选 NVIDIA 查询")
     parser.add_argument("--self-test", action="store_true", help=argparse.SUPPRESS)
     parser.add_argument("--autostart", action="store_true", help=argparse.SUPPRESS)
@@ -18,10 +19,10 @@ def main(argv=None):
     if sys.platform == "linux" or args.headless or args.check:
         if unknown:
             parser.error("无法识别的参数: " + " ".join(unknown))
-        if any(not 1 <= p <= 65535 for p in (args.port, args.data_port) if p is not None):
+        if not 1 <= args.port <= 65535:
             parser.error("端口必须在 1–65535 之间")
-        if args.data_port == args.port:
-            parser.error("管理服务与数据服务端口必须不同")
+        if args.data_port is not None and not 1024 <= args.data_port <= 65535:
+            parser.error("传感器数据接口端口必须在 1024–65535 之间")
         from hwmonitor.server import main as server_main
         return server_main(args)
     from hwmonitor.desktop import desktop_main

@@ -19,11 +19,11 @@ paths / settings: 各层共用的基础模块
 
 | 位置 | 职责 |
 |---|---|
-| `__main__.py` | 入口。以脚本方式运行时（`start.bat`、开机自启任务、UAC 提权重启）把 `src/` 加入导入路径 |
+| `__main__.py` | 入口。以脚本方式运行时（`start-windows.bat`、开机自启任务、UAC 提权重启）把 `src/` 加入导入路径 |
 | `bootstrap.py` | 启动流程：日志、管理员权限、单实例、DPI 感知、旧数据迁移、创建主窗口；`--self-test` 自检 |
 | `paths.py` | 程序目录、数据目录、内置硬件库目录、图标位置；兼容源码运行和 PyInstaller 打包 |
 | `settings.py` | 设置的默认值、字段校验、原子写入 `data/settings.json` |
-| `core/collector.py` | 唯一的采集线程：刷新硬件、解析读数、写历史、发布给网页服务；设备（路由器/远程电脑）在线程池里各自读取，采集循环只取最近一次结果，不等网络 |
+| `core/collector.py` | 唯一的采集线程：刷新硬件、解析读数、写历史、发布给传感器数据接口；设备（路由器/远程电脑）在线程池里各自读取，采集循环只取最近一次结果，不等网络 |
 | `core/alerts.py` | 持续高温与风扇异常告警（持续时间、恢复温差、冷却） |
 | `core/device_presence.py` | TP-Link 终端状态变化确认，首次/恢复静默建立基准；事件经独立队列送到 UI，避免采样队列覆盖而丢失提醒 |
 | `core/history.py` | SQLite 历史存储、显卡身份合并、曲线精简、CSV 导出 |
@@ -39,13 +39,13 @@ paths / settings: 各层共用的基础模块
 | `system/autostart.py` | 任务计划程序开机自启，程序移动后自动修正路径 |
 | `system/tray.py` | 托盘图标、气泡通知、单实例互斥量（纯 ctypes） |
 | `system/pawnio.py` | PawnIO 驱动检测与安装 |
-| `system/webserver.py` | 兼容 `/data.json` 的网页服务、局域网防火墙规则、本机地址 |
+| `system/webserver.py` | 兼容 `/data.json` 的传感器数据接口、局域网防火墙规则、本机地址 |
 | `system/management_server.py` / `webbridge.py` | 独立局域网手机管理服务（默认 7076）：HTTP、固定开放局域网、独立防火墙规则、HTTP 与 Tk 主线程之间的有界 RPC 队列 |
 | `system/web/` | 自包含手机网页、样式、脚本、主屏幕图标与 Web App manifest；不依赖 CDN |
 | `core/management.py` | 对外配置投影、密码隐藏、严格更新校验和版本冲突检测 |
 | `ui/web_management.py` | 在 Tk 主线程读取状态与历史、保存并应用网页设置；硬件概览后台读取 |
 | `ui/main_window.py` | 主窗口：CPU/显卡卡片、可选分组、提示条、底部工具栏、托盘联动、渲染 |
-| `ui/device_cards.py` | 设备卡片（OpenWrt / 远程电脑 / TP-Link）：单行标题、详情、终端流量榜、上下线提醒 |
+| `ui/device_cards.py` | 设备卡片（OpenWrt / 远程电脑 / TP-Link）：单行标题、详情、终端流量榜、在线状态变更提醒 |
 | `ui/settings_dialog.py` 等 | 设置、自定义显示、历史曲线、硬件信息、悬浮窗、通用对话框，各为一个混入类 |
 | `ui/theme.py` | 配色、字体、ttk 样式、窗口图标与深色标题栏、自绘开关和勾选框 |
 | `ui/display.py` | 指标/分组默认名称、数值格式化、按温度着色 |

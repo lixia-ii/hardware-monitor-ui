@@ -1,4 +1,4 @@
-"""网页服务: 提供与 LibreHardwareMonitor Remote Web Server 兼容的 /data.json, 可选开放给局域网。"""
+"""传感器数据接口: 提供与 LibreHardwareMonitor Remote Web Server 兼容的 /data.json, 可选开放给局域网。"""
 import json
 import logging
 import socket
@@ -136,7 +136,7 @@ class WebServer:
                 server = ExclusiveHTTPServer((self.host or ("0.0.0.0" if lan else "127.0.0.1"), port), self._handler())
             except OSError as e:
                 log.warning("Web server cannot listen on %s: %s", port, e)
-                self.error = f"网页服务无法使用端口 {port}（可能已被占用）"
+                self.error = f"传感器数据接口无法使用端口 {port}（可能已被占用）"
                 return self.error
             server.daemon_threads = True
             self.server = server
