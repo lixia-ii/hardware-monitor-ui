@@ -1,4 +1,5 @@
 """读取硬件/系统概览信息 (型号、系统、处理器、主板、内存、显卡、显示器、磁盘、声卡、网卡)。"""
+import sys
 import json
 import math
 import shutil
@@ -159,6 +160,9 @@ def _disks(d):
 
 def load():
     """返回 dict: model, os, details [(标签, [行])]; 失败时 error 有值。"""
+    if sys.platform == "linux":
+        from hwmonitor.sensors.linux_info import load as linux_load
+        return linux_load()
     try:
         res = subprocess.run(
             ["powershell", "-NoProfile", "-NonInteractive", "-Command", _PS],

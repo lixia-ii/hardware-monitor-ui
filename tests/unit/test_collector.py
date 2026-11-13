@@ -72,9 +72,13 @@ class CollectorTests(unittest.TestCase):
         worker = Collector(settings.validate({"router": {"enabled": True}}))
         reading = dict(openwrt.empty_reading(), offline=False)
         started = threading.Event()
+        running, overlaps = [], []
         def slow_router(*_):
             started.set()
+            overlaps.append(len(running))
+            running.append(1)
             time.sleep(.3)  # 比两次采样的间隔还长
+            running.pop()
             return reading
         with patch.object(worker.router, "read", side_effect=slow_router) as read:
             first, second, third = self.run_ticks(worker, 3, side_effect=lambda *_: {"sensors_down": False})
@@ -82,7 +86,8 @@ class CollectorTests(unittest.TestCase):
         self.assertLess(first["collection_ms"], 100)
         self.assertEqual(first["routers"], [])  # 还没读到的设备暂不列出, 本机数据照常送出
         self.assertEqual(second["routers"], [])
-        self.assertEqual(read.call_count, 2)  # 进行中的读取不重复提交
+        # 进行中的读取不重复提交。第三次采样提交的新读取可能在停止时被取消, 所以不断言调用次数。
+        self.assertEqual(overlaps, [0] * read.call_count)
         self.assertEqual(third["routers"][0]["id"], "primary")
 
     def test_router_survives_sensor_failure(self):

@@ -5,19 +5,24 @@ build-backend = "setuptools.build_meta"
 [project]
 name = "hwmonitor"
 dynamic = ["version"]
-description = "Windows 硬件监控桌面程序, 基于 LibreHardwareMonitor 开发"
+description = "Windows 桌面与 Linux 服务器硬件监控"
 readme = "README.md"
 license = {file = "LICENSE"}
 requires-python = ">=3.11"
 # 应用而非库: 固定版本, 保证源码运行与打包结果一致
 dependencies = [
-    "pythonnet==3.2.1",  # 在进程内加载 .NET 硬件库 LibreHardwareMonitorLib
-    "clr_loader==0.3.1",
+    "pythonnet==3.2.1; sys_platform == 'win32'",  # 在进程内加载 .NET 硬件库 LibreHardwareMonitorLib
+    "clr_loader==0.3.1; sys_platform == 'win32'",
+    "psutil>=6.1,<8; sys_platform == 'linux'",
+    "cryptography>=44,<50; sys_platform == 'linux'",
 ]
 
 [project.optional-dependencies]
 build = ["pyinstaller==6.22.3"]  # scripts/build.ps1 构建便携 EXE
 icon = ["Pillow"]                # scripts/make_icon.py 重新生成图标
+
+[project.scripts]
+hwmonitor-server = "hwmonitor.bootstrap:main"
 
 [project.gui-scripts]
 hwmonitor = "hwmonitor.bootstrap:main"

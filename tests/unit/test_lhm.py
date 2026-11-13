@@ -1,5 +1,6 @@
 """LibreHardwareMonitorLib 封装: data.json 结构、数值格式、初始化重试。"""
 import json
+import sys
 from pathlib import Path
 import threading
 import time
@@ -88,6 +89,7 @@ class HardwareTests(unittest.TestCase):
         self.assertEqual(lhm.format_value("Throughput", "Connection Speed", 2500000000), "2.3 Gbps")
         self.assertEqual(lhm.format_value("TimeSpan", "x", 3725), "1:02:05")
 
+    @unittest.skipUnless(sys.platform == "win32", "Windows 硬件互斥量")
     def test_open_failure_is_retried_later_and_reopen_closes_first(self):
         source = lhm.Sensors(Path("missing"))
         with patch("hwmonitor.sensors.lhm._load", side_effect=lhm.Unavailable("no library")) as load, self.assertRaises(lhm.Unavailable):
@@ -115,6 +117,7 @@ class HardwareTests(unittest.TestCase):
         source.close()
         self.assertIsNone(source.computer)
 
+    @unittest.skipUnless(sys.platform == "win32", "Windows 硬件互斥量")
     def test_deferred_hardware_opens_without_blocking_samples(self):
         computer = Mock(Hardware=self.machine())
         opening = threading.Event()
@@ -135,6 +138,7 @@ class HardwareTests(unittest.TestCase):
         computer.Close.assert_called_once()
         self.assertEqual(computer.GetType.return_value.GetProperty.return_value.SetValue.call_count, 1)
 
+    @unittest.skipUnless(sys.platform == "win32", "Windows 硬件互斥量")
     def test_hardware_mutex_waits_for_previous_owner(self):
         source = lhm.Sensors(Path("missing"))
         with patch("hwmonitor.sensors.lhm._load", return_value=Mock(return_value=Mock(Hardware=[]))):
@@ -152,6 +156,7 @@ class HardwareTests(unittest.TestCase):
         thread.join()
         self.assertIsNotNone(other[-1])
 
+    @unittest.skipUnless(sys.platform == "win32", "Windows 硬件互斥量")
     def test_one_device_update_error_does_not_stop_sampling(self):
         machine = self.machine()
         machine[0].Update.side_effect = RuntimeError("unplugged")

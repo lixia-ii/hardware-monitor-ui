@@ -81,6 +81,7 @@ class PresenceTests(unittest.TestCase):
         worker._read_routers(cfg)
         self.assertFalse(worker.presence)
 
+    @unittest.skipUnless(__import__("sys").platform == "win32", "Windows 显示格式")
     def test_ui_delivers_one_grouped_notification_and_honors_current_switch(self):
         from hwmonitor.ui.main_window import MainWindow
         app = MainWindow.__new__(MainWindow)

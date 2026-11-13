@@ -9,4 +9,4 @@ if __package__ in (None, "") and not getattr(sys, "frozen", False):
 from hwmonitor.bootstrap import main  # noqa: E402
 
 if __name__ == "__main__":
-    main()
+    sys.exit(main())

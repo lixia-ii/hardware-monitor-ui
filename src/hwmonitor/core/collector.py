@@ -20,9 +20,10 @@ log = logging.getLogger(__name__)
 class Collector(threading.Thread):
     """source: lhm.Sensors, 只在本线程里打开/刷新/关闭; web: webserver.WebServer, 每次采样后发布。"""
 
-    def __init__(self, settings, source=None, web=None):
+    def __init__(self, settings, source=None, web=None, backend=None):
         super().__init__(name="sensor-collector", daemon=True)
         self.source = source
+        self.backend = backend
         self.web = web
         self.lock = threading.Lock()
         self.options = copy.deepcopy(settings)
@@ -52,7 +53,9 @@ class Collector(threading.Thread):
 
     def reload_hardware(self):
         """重新打开硬件 (装好 PawnIO 驱动后), 下一次采样时生效。"""
-        if self.source is not None:
+        if self.backend is not None:
+            self.backend.request_reopen()
+        elif self.source is not None:
             self.source.request_reopen()
         self.wake.set()
 
@@ -157,7 +160,8 @@ class Collector(threading.Thread):
             except Exception:
                 log.exception("History unavailable; continuing with memory history")
                 self.storage_error = "历史保存不可用，当前仅在内存中保留；请检查目录权限或数据库。"
-            if self.source is not None and not self.source.ready:
+            pending = self.backend if self.backend is not None else self.source
+            if pending is not None and not pending.ready:
                 # 首次打开硬件要几秒, 先让界面显示提示
                 self._put(dict(reading.empty_reading(), error="正在初始化硬件传感器…", initializing=True,
                                sample_time=time.time(),
@@ -168,11 +172,16 @@ class Collector(threading.Thread):
                     options = copy.deepcopy(self.options)
                 started = time.monotonic()
                 try:
-                    data = reading.read(options["gpu_id"], options["nic_ids"], self.source)
+                    if self.backend is not None:
+                        snapshot = self.backend.sample(options["gpu_id"], options["nic_ids"])
+                        data, tree = snapshot.data, snapshot.tree
+                    else:
+                        data = reading.read(options["gpu_id"], options["nic_ids"], self.source)
+                        tree = self.source.last_tree if self.source is not None else None
                     failures = 0
                     data["selection"] = (options["gpu_id"], options["nic_ids"])
                     if self.web is not None:
-                        self.web.publish(self.source.last_tree if self.source is not None else None)
+                        self.web.publish(tree)
                     data["routers"] = self._poll_routers(options)
                     data["router"] = data["routers"][0] if data["routers"] else None
                     data["collection_ms"] = round((time.monotonic() - started) * 1000, 1)
@@ -192,6 +201,8 @@ class Collector(threading.Thread):
                     self._put(data)
                 except Exception:
                     failures += 1
+                    if self.web is not None:
+                        self.web.publish(None)
                     log.exception("Sampling failed")
                     data = reading.empty_reading()
                     data.update(error="采集失败，请查看本地日志", sample_time=time.time(),
@@ -209,5 +220,7 @@ class Collector(threading.Thread):
                 self.router_pool.shutdown(wait=False, cancel_futures=True)
             if store:
                 store.close()
-            if self.source is not None:
+            if self.backend is not None:
+                self.backend.close()
+            elif self.source is not None:
                 self.source.close()

@@ -15,5 +15,6 @@ build/
 dist/
 *.egg-info/
 .build-venv/
+.venv/
 .test-data/
 *.spec

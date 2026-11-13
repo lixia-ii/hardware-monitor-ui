@@ -1,0 +1,30 @@
+[Unit]
+Description=Hardware Monitor headless server
+After=network.target
+
+[Service]
+Type=simple
+User=hwmonitor
+Group=hwmonitor
+WorkingDirectory=@APP_DIR@
+Environment=HARDWARE_MONITOR_DATA_DIR=/var/lib/hwmonitor
+Environment="HWMONITOR_ARGS=--host=127.0.0.1 --port=7076"
+EnvironmentFile=-/etc/default/hwmonitor
+ExecStart=@APP_DIR@/.venv/bin/python -m hwmonitor --headless $HWMONITOR_ARGS
+StateDirectory=hwmonitor
+StateDirectoryMode=0700
+RuntimeDirectory=hwmonitor
+RuntimeDirectoryMode=0700
+UMask=0077
+Restart=on-failure
+RestartSec=5
+TimeoutStopSec=15
+KillMode=control-group
+NoNewPrivileges=true
+ProtectSystem=strict
+ProtectHome=true
+PrivateTmp=true
+# Do not use PrivateDevices: optional GPU monitoring needs /dev/nvidia*.
+
+[Install]
+WantedBy=multi-user.target

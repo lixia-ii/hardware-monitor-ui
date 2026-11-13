@@ -1,5 +1,9 @@
 """悬浮窗吸附与贴边隐藏的位置计算。"""
 import unittest
+import sys
+
+if sys.platform != "win32":
+    raise unittest.SkipTest("Windows 桌面专属测试")
 
 from types import SimpleNamespace
 

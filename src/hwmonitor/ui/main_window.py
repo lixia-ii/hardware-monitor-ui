@@ -2,18 +2,16 @@
 import ctypes
 import logging
 import math
-import queue
 import re
 import sys
 import threading
 import time
 import tkinter as tk
-from collections import deque
 from tkinter import ttk
 
 from hwmonitor import settings
-from hwmonitor.core import history
-from hwmonitor.core.alerts import AlertEngine
+from hwmonitor.core.runtime import RuntimeState
+from hwmonitor.sensors.backend import WindowsBackend
 from hwmonitor.core.collector import Collector
 from hwmonitor.sensors import lhm, reading
 from hwmonitor.system import autostart, deps, pawnio, tray, webserver
@@ -154,16 +152,18 @@ class MainWindow(WebManagementMixin, SettingsDialogMixin, CustomizeDialogMixin, 
             threading.Thread(target=autostart.sync, daemon=True).start()
         self.gpu_sel = self.settings["gpu_id"]
         self.gpu_cur = None
-        self.history = deque(maxlen=history.MAX_ROWS)
-        self.recent_alerts = deque(maxlen=100)
-        self.alert_engine = AlertEngine()
+        self.runtime = RuntimeState()
+        self.history = self.runtime.history
+        self.recent_alerts = self.runtime.recent_alerts
+        self.alert_engine = self.runtime.alert_engine
         # 硬件传感器在进程内读取 (LibreHardwareMonitorLib); 自检不打开硬件
         self.web = webserver.WebServer()
         self.management = ManagementServer()
         self.web_bridge = self.management.bridge = Bridge()
         self._management_firewall = None
         self._firewall = None
-        self.collector = Collector(self.settings, None if "--self-test" in sys.argv else lhm.Sensors(), self.web)
+        self.collector = Collector(self.settings, web=self.web,
+                                   backend=None if "--self-test" in sys.argv else WindowsBackend(lhm.Sensors()))
         self.collector.start()
         self._storage_notice = None
         self._apply_display()
@@ -290,11 +290,12 @@ class MainWindow(WebManagementMixin, SettingsDialogMixin, CustomizeDialogMixin, 
         want = web["port"] if web["enabled"] and web["lan"] else None
         # 启动时 (_firewall 为 None) 只在开放局域网时校正规则 (程序目录可能移动过), 平时不必每次调用 netsh
         if want != self._firewall and "--self-test" not in sys.argv:
-            threading.Thread(target=webserver.firewall, args=(want,), daemon=True).start()
+            webserver.firewall_later(want)
         self._firewall = want
         return error
 
     def _save_settings(self):
+        self._state_revision = None  # 网页轮询的设置版本号立即重算
         try:
             settings.save(self.settings)
             return True
@@ -427,8 +428,7 @@ class MainWindow(WebManagementMixin, SettingsDialogMixin, CustomizeDialogMixin, 
             self.render(self.data)
 
     def _check_alerts(self, d):
-        for msg in self.alert_engine.check(d, self.settings["alerts"], time.monotonic()):
-            self.recent_alerts.append({"time": time.strftime("%Y-%m-%d %H:%M:%S"), "message": msg})
+        for msg in self.runtime.alerts(d, self.settings["alerts"]):
             logging.getLogger(__name__).warning(msg)
             if not self.tray.notify("硬件告警", msg):
                 self._flash(msg)
@@ -716,16 +716,7 @@ class MainWindow(WebManagementMixin, SettingsDialogMixin, CustomizeDialogMixin, 
             return
         self._device_notifications()
         self.web_bridge.drain(self._web_dispatch)
-        while not self.collector.history_rows.empty():
-            action, rows = self.collector.history_rows.get()
-            if action == "load":
-                self.history.extend(rows)
-            else:
-                self.history.append(rows)
-        try:
-            data = self.collector.results.get_nowait()
-        except queue.Empty:
-            data = None
+        data = self.runtime.latest(self.collector, self.settings)
         if data and data["selection"] == (self.settings["gpu_id"], self.settings["nic_ids"]):
             self.data = data
             self._check_alerts(data)

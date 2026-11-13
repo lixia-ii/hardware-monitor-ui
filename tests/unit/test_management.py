@@ -16,6 +16,12 @@ from hwmonitor.system import management_server, webserver
 from hwmonitor.system.webbridge import Bridge, WebError
 
 
+def done(value):
+    future = Future()
+    future.set_result(value)
+    return future
+
+
 def free_port():
     with socket.socket() as sock:
         sock.bind(("127.0.0.1", 0))
@@ -98,7 +104,7 @@ class ConfigurationTests(unittest.TestCase):
     def test_history_query_snapshot(self):
         now = time.time()
         rows = [(now - 10, {"cpu_temp": 50.0, "gpu_id": "g", "gpu_name": "G"}), (now - 7200, {"cpu_temp": 90.0})]
-        snapshot = {"rows": rows, "time": now, "gpu_id": "g", "nic_ids": None}
+        snapshot = {"rows": rows, "time": now, "gpu_id": "g", "net_selection": None}
         result = management.history_query(snapshot, {})
         self.assertEqual(result["count"], 1)
         self.assertEqual(result["peaks"]["cpu_temp"], 50.0)
@@ -121,13 +127,30 @@ class ConfigurationTests(unittest.TestCase):
         self.assertEqual(changed["collapsed"], ["case"])
 
 
+class DisplayBoundTests(unittest.TestCase):
+    def test_display_total_is_bounded(self):
+        config = settings.validate({})
+        for batch in range(2):
+            patch_ = {f"x{batch}-{i}": {"visible": True, "name": "", "order": 100} for i in range(1500)}
+            payload = {"revision": management.revision(config), "changes": {"display": patch_}}
+            if batch:
+                with self.assertRaises(WebError):
+                    management.update(config, payload)
+            else:
+                config = management.update(config, payload)
+        with self.assertRaises(WebError):
+            management.update(config, {"revision": management.revision(config),
+                                       "changes": {"display": {"x" * 201: {"visible": True}}}})
+
+
 class ServerTests(unittest.TestCase):
     def setUp(self):
         self.server = management_server.ManagementServer()
         self.port = free_port()
         self.server.bridge = Mock()
         self.server.bridge.call.side_effect = lambda action, payload=None: (
-            {"rows": [], "time": time.time(), "gpu_id": None, "nic_ids": None} if action == "history"
+            {"rows": [], "time": time.time(), "gpu_id": None, "net_selection": None} if action == "history"
+            else {"data": None, "alerts": [], "hardware": done({"cpu": "x"}), "stats": {}} if action == "diagnostics"
             else {"ok": True, "value": float("nan")})
         self.assertIsNone(self.server.apply(True, self.port))
 
@@ -197,6 +220,31 @@ class ServerTests(unittest.TestCase):
         self.assertIsNone(self.server.apply(True, self.port))
         self.assertEqual(self.request("GET", "/api/state")[0], 200)
 
+    def test_failed_bind_is_retried(self):
+        self.server.stop()
+        with patch.object(management_server, "BoundedServer", side_effect=OSError):
+            self.assertIsNotNone(self.server.apply(True, self.port))
+        self.assertIsNone(self.server.apply(True, self.port))
+        self.assertIsNotNone(self.server.server)
+
+    def test_firewall_updates_apply_in_order(self):
+        applied, started, release = [], threading.Event(), threading.Event()
+        def slow(port, rule):
+            started.set()
+            release.wait(3)
+            applied.append(port)
+        with patch.object(webserver, "firewall", side_effect=slow):
+            management_server.firewall_later(7076)
+            started.wait(3)
+            management_server.firewall_later(None)
+            management_server.firewall_later(7077)
+            release.set()
+            for _ in range(100):
+                if len(applied) == 2:
+                    break
+                time.sleep(.02)
+        self.assertEqual(applied, [7076, 7077])
+
     def test_independent_legacy_service_and_firewall(self):
         legacy = webserver.WebServer()
         port = free_port()
@@ -216,6 +264,9 @@ class ServerTests(unittest.TestCase):
             legacy.stop()
         with patch("hwmonitor.system.webserver.subprocess.run") as run:
             self.assertTrue(management_server.firewall(7076))
+        if __import__("sys").platform != "win32":
+            run.assert_not_called()
+            return
         args = run.call_args_list[1].args[0]
         self.assertIn("remoteip=localsubnet", args)
         self.assertIn("localport=7076", args)

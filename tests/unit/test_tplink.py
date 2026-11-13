@@ -133,6 +133,7 @@ class TPLinkTests(unittest.TestCase):
         self.assertIsNone(data["down_rate"])
         self.assertIsNone(tplink._number(True))
 
+    @unittest.skipUnless(__import__("sys").platform == "win32", "Windows 显示格式")
     def test_wan_rates_use_firmware_kib_per_second_not_host_bytes(self):
         # BasicNetState.htm fc(153) -> "153 KB/s"; the app consumes bytes/s.
         # The host-table formatter ac() divides by 1024, but does not apply here.
@@ -158,6 +159,7 @@ class TPLinkTests(unittest.TestCase):
             self.assertNotIn(b"123456", request.data)
             self.assertEqual(json.loads(request.data)["method"], "do")
 
+    @unittest.skipUnless(__import__("sys").platform == "win32", "Windows 显示格式")
     def test_wan_status_and_online_duration(self):
         for state in range(5):
             data = tplink.parse_wan({"network": {"wan_status": {"link_status": state, "up_time": "39114"}}})

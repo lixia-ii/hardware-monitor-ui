@@ -58,6 +58,9 @@ class WebServerTests(unittest.TestCase):
         with patch("hwmonitor.system.webserver.subprocess.run") as run:
             self.assertTrue(webserver.firewall(8085))
             self.assertTrue(webserver.firewall(None))
+        if __import__("sys").platform != "win32":
+            run.assert_not_called()
+            return
         add = run.call_args_list[1].args[0]
         self.assertIn("remoteip=localsubnet", add)
         self.assertIn("localport=8085", add)

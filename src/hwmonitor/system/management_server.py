@@ -5,11 +5,11 @@ import json
 import logging
 import math
 import threading
-from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
+from http.server import BaseHTTPRequestHandler
 from pathlib import Path
 from urllib.parse import urlsplit, parse_qs
 
-from hwmonitor.core import history, management
+from hwmonitor.core import diagnostics, history, management
 from hwmonitor.system import webserver
 from hwmonitor.system.webbridge import WebError
 
@@ -47,7 +47,7 @@ def allowed_host(host, port):
     return True
 
 
-class BoundedServer(ThreadingHTTPServer):
+class BoundedServer(webserver.ExclusiveHTTPServer):
     """Bound simultaneous clients and idle sockets."""
     daemon_threads = True
 
@@ -80,7 +80,8 @@ class BoundedServer(ThreadingHTTPServer):
 
 
 class ManagementServer:
-    def __init__(self):
+    def __init__(self, host="0.0.0.0"):
+        self.host = host
         self.server = None
         self.config = (False, 0)
         self.error = None
@@ -155,8 +156,15 @@ class ManagementServer:
                     name, content_type = files[path]
                     self._send(200, (ASSETS / name).read_bytes(), content_type)
                     return
-                if path in ("/api/state", "/api/settings", "/api/diagnostics"):
+                if path in ("/api/state", "/api/settings"):
                     self._send(200, self._call(path[5:]))
+                elif path == "/api/diagnostics":
+                    snapshot = self._call("diagnostics")
+                    try:
+                        hardware = snapshot["hardware"].result(timeout=60)
+                    except TimeoutError:
+                        raise WebError(503, "硬件信息读取超时，请稍后再导出") from None
+                    self._send(200, diagnostics.report(snapshot["data"], hardware, snapshot["alerts"], snapshot["stats"]))
                 elif path == "/api/hardware":
                     self._send(200, self._call("hardware", parse_qs(parsed.query)))
                 elif path in ("/api/history", "/api/history.csv"):
@@ -202,13 +210,14 @@ class ManagementServer:
     def apply(self, enabled, port):
         """Start/stop the independent HTTP listener; LAN access is always enabled."""
         wanted = (enabled, port if enabled else 0)
-        if wanted == self.config and (self.server is not None or self.error or not enabled):
+        # A failed bind is retried on the next call: the port may have been released since.
+        if wanted == self.config and (self.server is not None or not enabled):
             return self.error
         self.stop()
         self.config, self.error = wanted, None
         if enabled:
             try:
-                server = BoundedServer(("0.0.0.0", port), self._handler())
+                server = BoundedServer((self.host, port), self._handler())
             except OSError:
                 log.exception("Management server cannot listen on %s", port)
                 self.error = f"管理端无法使用端口 {port}（可能已被占用）"
@@ -227,3 +236,7 @@ class ManagementServer:
 def firewall(port=None):
     """Separate local-subnet rule for the management listener; never edits the LAN data rule."""
     return webserver.firewall(port, rule=RULE)
+
+
+def firewall_later(port=None):
+    webserver.firewall_later(port, rule=RULE)

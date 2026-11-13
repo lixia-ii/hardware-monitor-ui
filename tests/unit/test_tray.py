@@ -1,5 +1,9 @@
 """托盘右键菜单: 开关项按当前状态打勾, 选中项映射为事件名。"""
 import unittest
+import sys
+
+if sys.platform != "win32":
+    raise unittest.SkipTest("Windows 桌面专属测试")
 from unittest.mock import patch
 
 from hwmonitor.system import tray

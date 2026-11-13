@@ -44,9 +44,13 @@ def update(config, payload):
             if not isinstance(value, dict) or (key != "display" and set(value) - (set(config[key]) - DESKTOP_ONLY.get(key, set()))):
                 raise WebError(400, "设置字段无效")
             if key == "display":
-                if len(value) > 2000 or any(not isinstance(p, dict) or set(p) - {"visible", "name", "order"} for p in value.values()):
+                if len(value) > 2000 or any(not isinstance(k, str) or len(k) > 200 or not isinstance(p, dict)
+                                            or set(p) - {"visible", "name", "order"} for k, p in value.items()):
                     raise WebError(400, "显示配置无效")
                 candidate[key].update(copy.deepcopy(value))
+                # Bound the merged total too, otherwise repeated patches grow settings.json forever.
+                if len(candidate[key]) > 2000:
+                    raise WebError(400, "显示配置项过多")
             else:
                 candidate[key].update(copy.deepcopy(value))
         elif key == "routers":
@@ -148,8 +152,8 @@ def history_query(snapshot, params, export=False):
         current = snapshot["gpu_id"]
         selected = next((k for k, (_, ids) in groups.items() if current in ids), next(iter(groups), None))
     gpu_ids = groups[selected][1] if selected else frozenset((None,))
-    nic_ids = snapshot["nic_ids"]
-    net = None if nic_ids is None else "|".join(sorted(nic_ids))
+    # Same selection key as the desktop history dialog: the one the current sample was taken with.
+    net = snapshot["net_selection"]
     filtered = [(t, history.filter_sample(values, gpu_ids, net)) for t, values in rows if start <= t <= end]
     if export:
         return {"rows": filtered}

@@ -1,6 +1,10 @@
 """PawnIO 驱动检测与安装。"""
 from pathlib import Path
 import unittest
+import sys
+
+if sys.platform != "win32":
+    raise unittest.SkipTest("Windows 桌面专属测试")
 from unittest.mock import patch
 
 from hwmonitor import paths

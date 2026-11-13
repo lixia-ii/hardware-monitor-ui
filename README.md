@@ -50,7 +50,7 @@
 
 ### TP-Link 原厂路由器
 
-适配 TL-XDR3040 易展版使用的原厂登录与 `/ds` 状态接口，无需刷机或安装服务。进入 **设置 → 设备 → 加入设备**，选择 **TP-Link（原厂固件）**，填写管理地址（例如 `http://192.168.0.1`），在 **管理员密码** 中输入管理密码，点击 **保存并连接**，会自动开启监控。密码框留空时点击按钮会使用已保存的密码重连，输入新密码则替换旧密码。
+适配 TL-XDR3040 易展版使用的原厂登录与 `/ds` 状态接口，无需刷机或安装服务。进入 **设置 → 设备 → 加入设备**，选择 **TP-Link（原厂固件）**，填写管理地址（例如 `http://192.168.0.1`），在 **管理员密码** 中输入管理密码，点击 **保存并连接**，会自动开启监控。密码框留空时点击按钮会使用已保存的密码重连，输入新密码则替换旧密码；修改管理地址后已保存的密码会被清除，需要重新输入，避免把密码发给新地址。
 
 密码由 Windows DPAPI 加密后保存在配置中，仅当前 Windows 用户可读取；复制配置到其他电脑或用户后需要重新输入。密码和登录会话不放入采集数据、网页服务或诊断报告。登录失败后停止自动重试，重新输入密码或点击 **保存并连接** 再试。
 
@@ -188,3 +188,21 @@ hardware-monitor-ui/
 ## 许可证
 
 本项目代码以 [MIT](LICENSE) 许可证发布。`vendor/LibreHardwareMonitor/` 目录中的第三方文件保持原样、按各自许可证分发:LibreHardwareMonitorLib 以 [MPL-2.0](licenses/LibreHardwareMonitor-MPL-2.0.txt) 发布(源码 https://github.com/LibreHardwareMonitor/LibreHardwareMonitor ),其依赖程序集(HidSharp、DiskInfoToolkit、RAMSPDToolkit、BlackSharp、System.*)随 LibreHardwareMonitor 发布包一同分发;PawnIO 安装程序以 [GPL-2.0](licenses/PawnIO-GPL-2.0.txt) 发布(源码 https://github.com/namazso/PawnIO )。便携 EXE 内含 pythonnet 与 clr_loader(MIT)。
+
+## Linux 服务器（预览）
+
+已加入无桌面服务器模式，支持 CPU、内存、网速、可读温度/风扇、历史、告警与网页设备管理。NVIDIA 按需使用 `--nvidia`。
+
+在项目根目录执行 `sh start.sh` 即可后台启动，默认监听 `0.0.0.0:7076`，浏览器打开 `http://服务器IP:7076/`。首次自动创建虚拟环境并联网安装依赖，之后复用环境（需要 Python 3.11+、venv、pip、Bash 和 util-linux）。关闭终端后继续运行，数据保存在项目的 `data/`。管理命令：
+
+```sh
+sh start.sh start       # 启动，省略 start 也可以；兼容旧的 sh start.sh 1
+sh start.sh stop        # 关闭
+sh start.sh status      # 状态及 PID
+sh start.sh restart     # 重启，沿用上次参数
+sh start.sh logs        # 实时日志，Ctrl+C 仅停止查看
+```
+
+可指定参数，例如 `sh start.sh start --host 127.0.0.1 --port 8080`；`sh start.sh --check` 仍为前台环境检查。管理端没有登录认证，请用于可信内网。直接运行 `python -m hwmonitor --headless` 或 systemd 模式仍默认仅本机访问。
+
+安装、systemd、访问与备份见 [Linux 部署说明](docs/LINUX.md)。Ubuntu 实机、24 小时运行与升级回退仍待验收。

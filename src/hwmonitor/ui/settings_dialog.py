@@ -434,7 +434,14 @@ class SettingsDialogMixin:
         self.settings["collapsed"] = [key for key in self.settings["collapsed"]
                                       if not key.startswith("router-settings:") or key in active_keys]
         # 已删除设备的主界面收起状态、显示偏好和远程指标偏好一并清理, 不在配置里残留。
-        removed = {item["id"] for item in self.settings["routers"]} - {item["id"] for item in items}
+        # 已保存的 TP-Link 密码只属于原地址: 地址改了而密码没有重新输入, 就清掉, 不发给新主机。
+        old = {item["id"]: item for item in self.settings["routers"]}
+        for item in items:
+            saved = old.get(item["id"])
+            if (item.get("type") == "tplink" and saved and saved["url"] != item["url"]
+                    and item.get("password_protected") == saved.get("password_protected")):
+                item["password_protected"] = ""
+        removed = set(old) - {item["id"] for item in items}
         if removed:
             stale = {"router:" + ident for ident in removed}
             prefixes = tuple("sensor:device:" + ident + ":" for ident in removed)
@@ -638,7 +645,9 @@ class SettingsDialogMixin:
                 current = next(item for item in self.settings["routers"] if item["id"] == cfg["id"])
                 try:
                     # Re-protect also on manual retry so the collector clears its login failure latch.
-                    plain = password.get() or credentials.unprotect(current.get("password_protected", ""))
+                    # 换了地址必须重新输入密码, 旧地址的密码不发给新主机。
+                    plain = password.get() or (credentials.unprotect(current.get("password_protected", ""))
+                                               if current["url"] == value else "")
                     if not plain:
                         raise ValueError("Empty password")
                     protected = credentials.protect(plain)
@@ -708,6 +717,8 @@ class SettingsDialogMixin:
         self.collector.configure(self.settings)
         if key == "web":
             self._apply_web()
+            if self.settings["management"]["enabled"] and not self.management.server:
+                self._apply_management()  # 端口冲突解除或数据服务关闭后, 管理端可以启动了
         elif key == "management":
             self._apply_management()
 

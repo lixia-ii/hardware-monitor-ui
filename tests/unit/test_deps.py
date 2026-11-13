@@ -14,7 +14,7 @@ class InstallTests(unittest.TestCase):
         args = run.call_args.args[0]
         self.assertEqual(args[1:4], ["-m", "pip", "install"])
         self.assertEqual(args[-2:], ["-e", str(paths.BASE)])
-        self.assertEqual(run.call_args.kwargs["creationflags"], subprocess.CREATE_NO_WINDOW)
+        self.assertEqual(run.call_args.kwargs["creationflags"], getattr(subprocess, "CREATE_NO_WINDOW", 0))
 
     def test_failure_reported(self):
         with patch("subprocess.run", return_value=subprocess.CompletedProcess([], 1, "", "boom")), \

@@ -79,3 +79,9 @@ LibreHardwareMonitorLib ─(lhm.Sensors.sample)─> data.json 结构的树 ─�
 - `tests/ui/smoke_ui.py`：隔离数据目录、模拟传感器的界面集成测试。
 - `tests/support.py`：共用的模拟传感器树和模拟硬件对象。
 - 打包后的 EXE 用 `--self-test` 自检，确认能加载 .NET 硬件库。
+
+## Linux 服务器路径
+
+`bootstrap` 先解析模式，Windows 延迟导入 `desktop`，Linux 选择 `server.Controller`，服务器路径不导入 Tk、托盘、Win32 或 pythonnet。桌面和后台通过 `core.actions.ManagementActions` 共享网页动作，通过 `core.runtime.RuntimeState` 共享历史与告警消费；各自控制循环串行处理 Bridge 请求，桌面副作用保留在 UI。
+
+`Collector` 接受 `sensors.backend.Backend`，每次生成 `Snapshot(data, tree)`；Windows 包装现有 LHM，Linux 直接生成归一化读数，再从同一读数生成兼容树。采集线程仍是唯一历史写入者。Linux 以 `linux_credentials`、`linux_info` 替换平台服务，部署见 [LINUX.md](LINUX.md)。

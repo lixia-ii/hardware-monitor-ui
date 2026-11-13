@@ -17,7 +17,7 @@ def install():
     """用当前解释器的 pip 安装 pyproject.toml 里的依赖 (不弹控制台), 返回是否成功。"""
     try:
         done = subprocess.run(command(), capture_output=True, text=True, errors="replace", timeout=900,
-                              creationflags=subprocess.CREATE_NO_WINDOW)
+                              creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0))
     except (OSError, subprocess.TimeoutExpired):
         log.exception("pip install failed")
         return False

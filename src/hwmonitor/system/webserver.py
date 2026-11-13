@@ -11,6 +11,14 @@ log = logging.getLogger(__name__)
 RULE = "HardwareMonitorUI Web"
 
 
+class ExclusiveHTTPServer(ThreadingHTTPServer):
+    def server_bind(self):
+        if sys.platform == "win32":
+            self.allow_reuse_address = False
+            self.socket.setsockopt(socket.SOL_SOCKET, socket.SO_EXCLUSIVEADDRUSE, 1)
+        super().server_bind()
+
+
 def lan_addresses():
     """本机的局域网 IPv4 地址 (不发送数据), 用于显示访问地址。"""
     found = []
@@ -32,6 +40,8 @@ _firewall_lock = threading.Lock()
 
 def firewall(port=None, rule=RULE):
     """port 为 None 时删除放行规则, 否则只对本地子网放行本程序的该端口 (需要管理员)。"""
+    if sys.platform != "win32":
+        return True
     run = dict(capture_output=True, timeout=10, creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0))
     with _firewall_lock:  # 数据服务和管理端的规则可能同时更新, netsh 串行执行
         try:
@@ -47,8 +57,30 @@ def firewall(port=None, rule=RULE):
     return True
 
 
+_firewall_pending, _firewall_running, _firewall_lock_pending = {}, set(), threading.Lock()
+
+
+def firewall_later(port=None, rule=RULE):
+    """后台更新规则: 每条规则只有一个线程按顺序执行, 连续修改时只应用最后一次的状态。"""
+    with _firewall_lock_pending:
+        _firewall_pending[rule] = port
+        if rule in _firewall_running:
+            return
+        _firewall_running.add(rule)
+    def drain():
+        while True:
+            with _firewall_lock_pending:
+                if rule not in _firewall_pending:
+                    _firewall_running.discard(rule)
+                    return
+                wanted = _firewall_pending.pop(rule)
+            firewall(wanted, rule)
+    threading.Thread(target=drain, name="firewall", daemon=True).start()
+
+
 class WebServer:
-    def __init__(self):
+    def __init__(self, host=None):
+        self.host = host
         self.lock = threading.Lock()
         self.body = None
         self.server = None
@@ -101,7 +133,7 @@ class WebServer:
         self.config, self.error = wanted, None
         if enabled:
             try:
-                server = ThreadingHTTPServer(("0.0.0.0" if lan else "127.0.0.1", port), self._handler())
+                server = ExclusiveHTTPServer((self.host or ("0.0.0.0" if lan else "127.0.0.1"), port), self._handler())
             except OSError as e:
                 log.warning("Web server cannot listen on %s: %s", port, e)
                 self.error = f"网页服务无法使用端口 {port}（可能已被占用）"

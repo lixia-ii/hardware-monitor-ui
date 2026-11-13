@@ -86,7 +86,7 @@ def check_http(app):
         done.set()
 
 
-with patch("hwmonitor.settings.load", return_value=config), patch("hwmonitor.core.collector.reading.read", side_effect=lambda *args: dict(fixture)), patch("hwmonitor.system.autostart.sync"), patch("hwmonitor.system.autostart.is_enabled", return_value=False), patch("hwmonitor.ui.web_management.hwinfo.load", return_value={"model":"Fixture", "details":[], "error":None}) as hardware_load:
+with patch("hwmonitor.settings.load", return_value=config), patch("hwmonitor.core.collector.reading.read", side_effect=lambda *args: dict(fixture)), patch("hwmonitor.system.autostart.sync"), patch("hwmonitor.system.autostart.is_enabled", return_value=False), patch("hwmonitor.core.actions.hwinfo.load", return_value={"model":"Fixture", "details":[], "error":None}) as hardware_load:
     app = MainWindow()
     app.root.withdraw()
     app.root.report_callback_exception = lambda *args: failures.append(str(args))
