@@ -15,9 +15,10 @@ jobs:
       - run: python -m hwmonitor --help
       - run: python -m hwmonitor --check
       - run: python -m unittest discover -s tests/unit -t . -v
+      - run: node --test tests/unit/test_web_devices.js
       - run: python tests/smoke_headless.py
       - run: python tests/smoke_launcher.py
-      - run: bash -n start-linux.sh && sh -n start.sh
+      - run: bash -n start-linux.sh
       - run: sh -n scripts/install-linux.sh && sh -n scripts/uninstall-linux.sh
   windows:
     runs-on: windows-latest

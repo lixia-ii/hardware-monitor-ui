@@ -16,7 +16,8 @@ from unittest.mock import patch
 
 from hwmonitor import paths, settings
 from hwmonitor.core import management
-from hwmonitor.sensors import reading
+from hwmonitor.core.collector import Collector
+from hwmonitor.sensors import reading, tplink
 from hwmonitor.sensors.linux import LinuxBackend
 from hwmonitor.server import Controller
 from hwmonitor.system import auth, linux_credentials
@@ -126,6 +127,41 @@ class LinuxTests(unittest.TestCase):
             self.assertEqual(linux_credentials.unprotect(fresh), "new")
             with self.assertRaises(ValueError):
                 linux_credentials.unprotect(token)
+
+    @unittest.skipUnless(importlib.util.find_spec("cryptography"), "Fernet 测试需要 cryptography（Linux 自动安装）")
+    def test_tplink_saved_password_reconnect_clears_login_latch(self):
+        # Exercise the Linux credential backend even when this test runs on Windows.
+        with patch.object(paths, "DATA", self.root), \
+                patch("hwmonitor.system.credentials.protect", side_effect=linux_credentials.protect), \
+                patch("hwmonitor.system.credentials.unprotect", side_effect=linux_credentials.unprotect):
+            protected = linux_credentials.protect("router-password")
+            config = settings.validate({"routers": [dict(settings.DEFAULT_TPLINK,
+                id="tp", name="网关", enabled=True, password_protected=protected)]})
+            worker = Collector(config)
+            wan = {"error_code": 0, "network": {"wan_status": {"up_speed": "1"}}}
+            with patch.object(tplink.Router, "_probe", return_value=None), \
+                    patch.object(tplink, "_READY_INTERVAL", 0), \
+                    patch.object(tplink.time, "monotonic", return_value=100) as clock, \
+                    patch.object(tplink.Router, "_post", side_effect=[
+                        {"error_code": -40401}, {"error_code": 0, "stok": "new"}, wan, {"error_code": -1}]) as post:
+                self.assertIn("登录失败", worker._read_routers(config)[0]["status"])
+                self.assertTrue(worker._read_routers(config)[0]["offline"])
+                self.assertEqual(post.call_count, 1)
+                device = dict(management.public_settings(config)["routers"][0], reconnect=True)
+                updated = management.update(config, {"revision": management.revision(config),
+                                                     "changes": {"routers": [device]}})
+                settings.save(updated)
+                restored = settings.load()
+                self.assertNotEqual(restored["routers"][0]["password_protected"], protected)
+                self.assertNotIn("reconnect", restored["routers"][0])  # One-shot, not a saved toggle.
+                self.assertIn("冷却", worker._read_routers(restored)[0]["status"])
+                self.assertEqual(post.call_count, 1)
+                clock.return_value = 160
+                self.assertFalse(worker._read_routers(restored)[0]["offline"])
+                self.assertIsNone(worker.routers["tp"].blocked)
+                self.assertEqual(post.call_count, 4)
+                self.assertEqual(post.call_args_list[1].args[2]["login"]["password"],
+                                 tplink.encode_password("router-password"))
 
     def test_controller_http_persistence_failure_conflict_and_shutdown(self):
         with patch.object(paths, "DATA", self.root):

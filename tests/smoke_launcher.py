@@ -35,7 +35,6 @@ def free_port():
 with tempfile.TemporaryDirectory(prefix="hwmonitor launcher ") as directory:
     app = Path(directory)
     shutil.copy(ROOT / "start-linux.sh", app)
-    shutil.copy(ROOT / "start.sh", app)
     shutil.copy(ROOT / "pyproject.toml", app)
     venv = app / ".venv"
     (venv / "bin").mkdir(parents=True)
@@ -46,8 +45,8 @@ with tempfile.TemporaryDirectory(prefix="hwmonitor launcher ") as directory:
     state = app / "data/launcher"
     pid_file = state / "hwmonitor.pid"
 
-    def run(*args, expected=0, script="start-linux.sh"):
-        result = subprocess.run(["sh", str(app / script), *args], env=env,
+    def run(*args, expected=0):
+        result = subprocess.run(["sh", str(app / "start-linux.sh"), *args], env=env,
                                 cwd="/", text=True, capture_output=True, timeout=45)
         print(result.stdout, end="")
         print(result.stderr, end="", file=sys.stderr)
@@ -91,8 +90,6 @@ with tempfile.TemporaryDirectory(prefix="hwmonitor launcher ") as directory:
         pid_file.unlink()
         run("status")
         assert pid_file.read_text() == first
-        # The old script name forwards every command.
-        run("status", script="start.sh")
         # A legacy --data-port in saved arguments is moved into the settings once, then not replayed.
         data_port = free_port()
         while data_port == port:

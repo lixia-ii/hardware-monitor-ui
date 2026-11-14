@@ -8,9 +8,11 @@ Normalize WAN rates to bytes/second for the rest of the application.
 """
 import http.client
 import json
+import logging
 import math
 import re
 import time
+import urllib.error
 import urllib.request
 from urllib.parse import quote, unquote
 
@@ -19,7 +21,22 @@ from hwmonitor.system import credentials
 
 _KEY = "RDpbLfCPsJZ7fiv"
 _DICTIONARY = ("yLwVl0zKqws7LgKPRQ84Mdt708T1qQ3Ha7xv3H7NyU84p21BriUWBU43odz3iP4rBL3cD02KZciXTysVXiV8ngg6vL48rPJyAUw0HurW20xqxv9aYb4M9wK1Ae0wlro510qXeU07kV57fQMc8L6aLgMLwygtc0F10a0Dg70TOoouyFhdysuRMO51yY5ZlOZZLEal1h0t9YQW0Ko7oBwmCAHoic4HYbUyVeU3sfQ1xtXcPcf1aT303wAQhv66qzW")
-_AUTH = {-40401, -40402, -40403, -40404, -40408}
+# Firmware error.js: EUNAUTH can wrap the actual reason in data.code.
+_AUTH = set(range(-40408, -40400))
+_SESSION_EXPIRED = {-40401, -40403, -40407}
+_RECONNECT_DELAY = 60
+_LOGIN_INTERVAL = 60
+_READY_INTERVAL = 10
+_PROBE_INTERVAL = 30
+log = logging.getLogger(__name__)
+
+
+def _codes(result):
+    """Only bounded integer codes are safe to display/log; never copy response text."""
+    def code(value):
+        return value if type(value) is int and -(2 ** 31) <= value < 2 ** 31 else None
+    data = result.get("data")
+    return code(result.get("error_code")), code(data.get("code")) if isinstance(data, dict) else None
 
 
 def encode_password(password):
@@ -136,8 +153,12 @@ class Router:
         self.identity = None
         self.session = None
         self.blocked = None
-        self.failures = 0
         self.next_at = 0
+        # Do not reset the login cooldown when the password is re-encrypted for
+        # a manual retry. Repeated clicks must not send repeated credentials.
+        self.login_after = 0
+        self.ready_since = None
+        self.session_verified = False
         self.cached = empty_reading()
         self.clients_at = 0
         self.clients = None
@@ -158,61 +179,155 @@ class Router:
         if len(raw) > 1024 * 1024:
             raise ValueError("Response too large")
         result = json.loads(raw)
-        if not isinstance(result, dict) or not isinstance(result.get("error_code"), int):
+        if not isinstance(result, dict) or _codes(result)[0] is None:
             raise ValueError("Invalid response")
         return result
+
+    def _probe(self, base, timeout):
+        """Check the public page without a password, stok, cookies or auth requests.
+
+        Redirects (some firmware sends GET / to /login.html), authentication
+        challenges and empty 2xx bodies all prove the management server is up.
+        Redirects are never followed, so credentials cannot be forwarded to
+        another host.
+        """
+        request = urllib.request.Request(base + "/", method="GET")
+        try:
+            with self.opener.open(request, timeout=timeout) as response:
+                response.read(1)
+        except urllib.error.HTTPError as error:
+            ready = error.code in (401, 403) or 300 <= error.code < 400
+            error.close()
+            if not ready:
+                raise
+
+    def _offline(self, status):
+        self.clients_at = 0
+        self.clients = self.terminals = self.terminals_sample_time = None
+        self.cached = empty_reading(status)
+        return dict(self.cached)
+
+    def _pause(self, status):
+        self.session = None
+        self.session_verified = False
+        self.ready_since = None
+        self.blocked = status
+        return self._offline(status)
+
+    def _reconnect(self, now):
+        self.session = None
+        self.session_verified = False
+        self.ready_since = None
+        self.next_at = now + _RECONNECT_DELAY
+        return self._offline(f"连接中断或会话失效，等待 {_RECONNECT_DELAY} 秒后检查管理页面再重连")
+
+    @staticmethod
+    def _log_exception(phase, error):
+        # HTTPError/JSONDecodeError can contain a stok URL or entire response.
+        # Never log the exception message, traceback, password or response body.
+        status = getattr(error, "code", None)
+        status = status if type(status) is int and 100 <= status <= 599 else None
+        log.warning("TP-Link request failed phase=%s exception=%s http_status=%s",
+                    phase, type(error).__name__, status)
+
+    def _check_result(self, result, phase, now):
+        outer, inner = _codes(result)
+        if outer == 0:
+            return None
+        log.warning("TP-Link request rejected phase=%s error_code=%s auth_code=%s", phase, outer, inner)
+        suffix = f"（错误码 {outer}" + (f" / {inner}" if inner is not None else "") + "）"
+        reason = inner if outer == -40401 and inner is not None else outer
+        if outer in (-40404, -40408) or reason in (-40404, -40408):
+            return self._pause("路由器已锁定管理登录，已暂停；请先在路由器端解除限制" + suffix)
+        if reason == -40405:
+            return self._pause("路由器提示状态重置，已暂停；请检查初始化状态和管理密码" + suffix)
+        if reason == -40406:
+            return self._pause("路由器管理登录数量已满，已暂停；请关闭其他管理会话后手动重连" + suffix)
+        if phase == "login":
+            # A failure of any kind may count toward the router's lockout limit.
+            return self._pause("登录失败，已暂停自动登录；请检查路由器后手动重连" + suffix)
+        if outer in _AUTH and reason not in _SESSION_EXPIRED:
+            return self._pause("路由器认证状态异常，已暂停自动登录；请检查管理页面" + suffix)
+        if not self.session_verified:
+            return self._pause("新会话未能读取状态，已暂停自动登录；请检查管理页面后手动重连" + suffix)
+        return self._reconnect(now)
 
     def read(self, url, nic=None, timeout=2.0, *, password_protected=""):
         identity = (url, password_protected)
         if self.identity != identity:
+            # A corrected address belongs to a different router, so its login
+            # cooldown must not carry over. Re-encrypting the password for the
+            # same address must keep the cooldown to prevent repeated logins.
+            if self.identity is None or self.identity[0] != url:
+                self.login_after = 0
             self.identity = identity
             self.session = self.blocked = None
-            self.failures = self.next_at = self.clients_at = 0
-            self.clients = None
-            self.terminals = self.terminals_sample_time = None
-            self.cached = empty_reading()
+            self.session_verified = False
+            self.ready_since = None
+            self.next_at = 0
+            self._offline("正在检查路由器管理页面")
         if not password_protected:
             return empty_reading("请在设置中输入密码")
         if self.blocked:
-            return empty_reading(self.blocked)
+            return dict(self.cached)
         now = time.monotonic()
         if now < self.next_at:
             return dict(self.cached)
+        if not self.session:
+            if now < self.login_after:
+                self.next_at = self.login_after
+                return self._offline("登录冷却中，避免触发路由器防护；稍后继续检查管理页面")
+            # Two public GETs at least _READY_INTERVAL apart, after a reconnect wait.
+            # While booting/unreachable, only GETs repeat -- never password logins.
+            try:
+                self._probe(url, timeout)
+            except (OSError, ValueError, http.client.HTTPException) as error:
+                self._log_exception("probe", error)
+                self.ready_since = None
+                self.next_at = now + _PROBE_INTERVAL
+                return self._offline(f"管理页面未就绪，{_PROBE_INTERVAL} 秒后检查；暂不发送登录密码")
+            if self.ready_since is None:
+                self.ready_since = now
+            if now - self.ready_since < _READY_INTERVAL:
+                self.next_at = self.ready_since + _READY_INTERVAL
+                return self._offline(f"管理页面已响应，等待 {_READY_INTERVAL} 秒确认稳定后尝试一次登录")
+        phase = "login" if not self.session else "wan"
         try:
             if not self.session:
                 try:
                     password = credentials.unprotect(password_protected)
+                    if not password:
+                        raise ValueError("Empty password")
                 except (OSError, ValueError, UnicodeError):
-                    self.blocked = "请重新输入密码"
-                    return empty_reading(self.blocked)
+                    return self._pause("密码无法读取，已暂停；请重新输入密码")
+                # Set before sending: a lost response may still have reached the router.
+                self.login_after = time.monotonic() + _LOGIN_INTERVAL
                 result = self._post(url, "/", {"method": "do", "login": {"password": encode_password(password)}}, timeout)
-                if result["error_code"] in _AUTH:
-                    # 只有密码错误/账号锁定才停止重试, 免得反复登录触发锁定; 其他错误按普通失败退避重试
-                    self.blocked = "登录失败，请重新输入密码后连接"
-                    return empty_reading(self.blocked)
-                if result["error_code"] != 0:
-                    raise ValueError("Login unavailable")
+                failure = self._check_result(result, phase, now)
+                if failure is not None:
+                    return failure
                 token = result.get("stok")
                 if not isinstance(token, str) or not token or len(token) > 256:
                     raise ValueError("Missing session")
                 self.session = quote(unquote(token), safe="")
+            phase = "wan"
             path = "/stok=" + self.session + "/ds"
             result = self._post(url, path, {"method": "get", "network": {"name": "wan_status"}}, timeout)
-            if result["error_code"] in _AUTH:
-                self.session = None
-                self.clients_at = 0
-                self.clients = self.terminals = self.terminals_sample_time = None
-                self.cached = empty_reading("会话失效，正在重连")
-                self.next_at = now + 5
-                return dict(self.cached)
-            if result["error_code"] != 0:
-                raise ValueError("WAN query unavailable")
+            failure = self._check_result(result, phase, now)
+            if failure is not None:
+                return failure
             r = parse_wan(result)
             if now >= self.clients_at:
                 self.clients_at = now + 2
                 self.clients = self.terminals = self.terminals_sample_time = None
                 try:
                     hosts = self._post(url, path, {"method": "get", "hosts_info": {"table": "online_host"}}, timeout)
+                    # Optional table failures are harmless, but auth/lockout signals
+                    # must stop requests instead of being ignored until the next tick.
+                    if hosts["error_code"] in _AUTH:
+                        failure = self._check_result(hosts, "hosts", now)
+                        if failure is not None:
+                            return failure
                     if hosts["error_code"] == 0:
                         self.clients = _clients(hosts)
                         self.terminals = parse_terminals(hosts)
@@ -223,16 +338,15 @@ class Router:
             r["clients"] = self.clients
             r["terminals"] = self.terminals
             r["terminals_sample_time"] = self.terminals_sample_time
-            self.failures = 0
-            # The collector controls the refresh interval (0.5–30 s). Only
-            # failures/session expiry delay reads here; healthy WAN data stays fresh.
+            self.session_verified = True
             self.next_at = 0
             self.cached = r
-        except (OSError, ValueError, http.client.HTTPException):
-            # Never log HTTP exceptions containing the session URL or response bodies.
-            self.failures += 1
-            self.clients_at = 0
-            self.clients = self.terminals = self.terminals_sample_time = None
-            self.next_at = now + min(30, 2 ** min(self.failures, 5))
-            self.cached = empty_reading("连接失败或固件接口不兼容")
+        except (OSError, ValueError, http.client.HTTPException) as error:
+            self._log_exception(phase, error)
+            if phase == "login":
+                # Never retry a password after an ambiguous timeout/HTML/HTTP reply.
+                return self._pause("登录结果无法确认，已暂停自动登录；请检查管理页面后手动重连")
+            if not self.session_verified:
+                return self._pause("新会话状态异常，已暂停自动登录；请检查管理页面后手动重连")
+            return self._reconnect(now)
         return dict(self.cached)

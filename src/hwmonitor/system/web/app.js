@@ -187,7 +187,8 @@ async function saveChanges(changes, revision = snapshot.revision) {
 }
 function deviceFields(cfg) {
   const kind=cfg.type||"openwrt";
-  $("#device-fields").innerHTML=inputRow("设备名称","name",cfg.name,{type:"text"})+inputRow("设备类型","type",kind,{choices:[["openwrt","OpenWrt 路由器"],["tplink","TP-Link 原厂路由器"],["hwmonitor","远程电脑"]]})+inputRow("设备地址","url",cfg.url,{type:"url",description:kind==="tplink"?"例如 http://192.168.0.1":kind==="hwmonitor"?"例如 http://192.168.1.2:8085/data.json":"例如 http://192.168.1.1:9100/metrics"})+inputRow("启用监控","enabled",cfg.enabled,{type:"checkbox"})+(kind==="tplink"?inputRow("管理员密码","password","",{type:"password",description:cfg.password_saved?"已保存，留空保留原密码；修改地址后需重新输入":"仅写入，加密保存在监控主机"})+inputRow("设备在线状态变更提醒","notify_clients",cfg.notify_clients!==false,{type:"checkbox"})+inputRow("重新连接","reconnect",false,{type:"checkbox",description:"登录失败后可勾选，使用已保存密码重试"}):kind==="openwrt"?inputRow("WAN 网卡","nic",cfg.nic||"",{type:"text",description:"留空自动选择，例如 pppoe-wan"}):"");
+  $("#device-fields").innerHTML=inputRow("设备名称","name",cfg.name,{type:"text"})+inputRow("设备类型","type",kind,{choices:[["openwrt","OpenWrt 路由器"],["tplink","TP-Link 原厂路由器"],["hwmonitor","远程电脑"]]})+inputRow("设备地址","url",cfg.url,{type:"url",description:kind==="tplink"?"例如 http://192.168.0.1":kind==="hwmonitor"?"例如 http://192.168.1.2:8085/data.json":"例如 http://192.168.1.1:9100/metrics"})+inputRow("启用监控","enabled",cfg.enabled,{type:"checkbox"})+(kind==="tplink"?inputRow("管理员密码","password","",{type:"password",description:cfg.password_saved?"已保存，留空保留原密码；修改地址后需重新输入":"仅写入，加密保存在监控主机"})+inputRow("设备在线状态变更提醒","notify_clients",cfg.notify_clients!==false,{type:"checkbox"})+'<p class="muted">断线后先等待 60 秒，再检查管理页面是否稳定；登录失败或结果不明时暂停自动登录。手动重试请点击“保存并重新连接”：保存修改并启用监控，密码留空使用已保存密码；两次密码登录至少间隔 60 秒，请勿反复点击。</p>':kind==="openwrt"?inputRow("WAN 网卡","nic",cfg.nic||"",{type:"text",description:"留空自动选择，例如 pppoe-wan"}):"");
+  $("#device-reconnect").hidden=kind!=="tplink";
   $("#device-form [name=name]").maxLength=60;
   $("#device-form [name=name]").required=true;
   $("#device-form [name=url]").required=true;
@@ -317,12 +318,18 @@ $("#device-form").addEventListener("change",event=>{
   deviceFields({...editorDevice,name,type:kind,url,enabled:false,password_saved:false});
 });
 $("#device-dialog").addEventListener("cancel",event=>{if(dirty&&!confirm("放弃设备修改？"))event.preventDefault();else dirty=false;});
+// Some browsers omit SubmitEvent.submitter; the click still tells us which button
+// submitted, so the reconnect action must not silently degrade to an ordinary save.
+let reconnectClicked=false;
+$("#device-reconnect").addEventListener("click",()=>{reconnectClicked=true;});
 $("#device-form").addEventListener("submit",async event=>{
-  event.preventDefault();const f=event.target,button=$('[type=submit]',f);button.disabled=true;
+  event.preventDefault();const f=event.target,buttons=$$('[type=submit]',f);buttons.forEach(b=>b.disabled=true);
   const d={id:editorDevice.id,name:f.elements.name.value.trim(),type:f.elements.type.value,url:f.elements.url.value.trim(),enabled:f.elements.enabled.checked,nic:f.elements.nic?.value.trim()||null};
-  if(d.type==="tplink"){d.password=f.elements.password.value;d.notify_clients=f.elements.notify_clients.checked;d.reconnect=f.elements.reconnect.checked;}
+  const reconnect=d.type==="tplink"&&(event.submitter?.name==="reconnect"||reconnectClicked);
+  reconnectClicked=false;
+  if(d.type==="tplink"){d.password=f.elements.password.value;d.notify_clients=f.elements.notify_clients.checked;d.reconnect=reconnect;if(reconnect)d.enabled=true;}
   const routers=clone(snapshot.settings.routers),index=routers.findIndex(x=>x.id===d.id);if(index>=0)routers[index]=d;else routers.push(d);
-  try{await saveChanges({routers},editingRevision);$("#device-dialog").close();renderDevices();}catch(error){$("#device-error").textContent=error.message;}finally{button.disabled=false;}
+  try{await saveChanges({routers},editingRevision);$("#device-dialog").close();renderDevices();if(reconnect)toast("已安排重新连接；可能需等待登录冷却，结果请查看设备卡片");}catch(error){$("#device-error").textContent=error.message;}finally{buttons.forEach(b=>b.disabled=false);}
 });
 $("#delete-device").addEventListener("click",async event=>{
   if(!confirm(`删除设备「${editorDevice.name}」？`))return;event.target.disabled=true;

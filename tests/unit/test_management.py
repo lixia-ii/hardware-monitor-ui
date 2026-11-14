@@ -95,6 +95,21 @@ class ConfigurationTests(unittest.TestCase):
                 self.update({"routers": [dict(device, reconnect=True)]})
             self.assertNotIn(("protected-secret",), [c.args for c in unprotect.call_args_list])
 
+    def test_reconnect_always_enables_monitoring(self):
+        self.config = settings.validate({"routers": [dict(settings.DEFAULT_TPLINK, id="router1", name="网关",
+                                                        enabled=False, password_protected="protected-secret")]})
+        device = management.public_settings(self.config)["routers"][0]
+        self.assertFalse(device["enabled"])
+        with patch("hwmonitor.core.management.credentials.unprotect", return_value="router-password"), \
+                patch("hwmonitor.core.management.credentials.protect", return_value="new-protected"):
+            changed = self.update({"routers": [dict(device, reconnect=True)]})
+        # A reconnect for a disabled device would never be polled, so the server
+        # must enable monitoring as well instead of accepting a no-op retry.
+        self.assertTrue(changed["routers"][0]["enabled"])
+        self.assertNotIn("reconnect", changed["routers"][0])
+        with self.assertRaises(WebError):
+            self.update({"routers": [dict(device, reconnect="yes")]})
+
     def test_floating_position_is_desktop_only(self):
         before = management.revision(self.config)
         self.config["floating"]["x"] += 50

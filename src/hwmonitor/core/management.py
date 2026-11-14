@@ -99,9 +99,16 @@ def update(config, payload):
                     device.pop("type", None)
                 password = device.pop("password", "")
                 reconnect = device.pop("reconnect", False)
+                if not isinstance(reconnect, bool):
+                    raise WebError(400, "设备字段无效")
                 device.pop("password_saved", None)
                 if not isinstance(password, str) or len(password) > 256:
                     raise WebError(400, "设备密码无效")
+                if kind == "tplink" and reconnect:
+                    # The web and desktop both mean "save and connect settings";
+                    # a disabled device would never be polled, so the retry would
+                    # silently do nothing.
+                    device["enabled"] = True
                 if kind == "tplink":
                     saved = old.get(ident, {})
                     # The stored secret belongs to that exact router: a new address must

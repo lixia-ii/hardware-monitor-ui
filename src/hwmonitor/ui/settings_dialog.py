@@ -767,7 +767,7 @@ class SettingsDialogMixin:
                 enabled.set(True)
                 self._enable(rows, True)
                 self._row_message(url_row)
-                self._row_message(password_row, "密码已加密保存，正在连接；连接结果显示在主界面设备卡片中。")
+                self._row_message(password_row, "密码已加密保存，已安排连接（可能需等待登录冷却）；结果请查看主界面设备卡片。")
                 return "break"
             ttk.Button(password_row.control, text="保存并连接", style="Accent.TButton", command=connect).pack(anchor="e", pady=("8p", 0))
             password_entry.bind("<Return>", connect)

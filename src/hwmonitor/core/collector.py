@@ -83,10 +83,13 @@ class Collector(threading.Thread):
         """按配置增删、替换各设备的读取对象, 返回启用的设备配置。"""
         active = [cfg for cfg in options["routers"] if cfg["enabled"]]
         ids = {cfg["id"] for cfg in active}
-        self.routers = {key: value for key, value in self.routers.items() if key in ids}
-        self.device_types = {key: value for key, value in self.device_types.items() if key in ids}
+        # Keep TP-Link login latches/cooldowns while monitoring is disabled.
+        # Toggling off/on must not silently create a fresh password attempt.
+        retained = ids | {cfg["id"] for cfg in options["routers"] if cfg.get("type") == "tplink"}
+        self.routers = {key: value for key, value in self.routers.items() if key in retained}
+        self.device_types = {key: value for key, value in self.device_types.items() if key in retained}
         self.presence = {key: value for key, value in self.presence.items() if key in ids}
-        self.device_reads = {key: value for key, value in self.device_reads.items() if key in ids}
+        self.device_reads = {key: value for key, value in self.device_reads.items() if key in retained}
         with self.device_lock:
             self.device_latest = {key: value for key, value in self.device_latest.items() if key in ids}
         for cfg in active:

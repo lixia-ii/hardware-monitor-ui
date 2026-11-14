@@ -1,5 +1,7 @@
 __pycache__/
 *.pyc
+# JetBrains IDE local configuration
+.idea/
 # Development caches, build environment and test data
 .build/
 # Local configuration/history/logs
