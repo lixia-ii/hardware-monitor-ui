@@ -20,7 +20,7 @@ log = logging.getLogger(__name__)
 class Collector(threading.Thread):
     """source: lhm.Sensors, 只在本线程里打开/刷新/关闭; web: webserver.WebServer, 每次采样后发布。"""
 
-    def __init__(self, settings, source=None, web=None, backend=None):
+    def __init__(self, settings, source=None, web=None, backend=None, login_state=None):
         super().__init__(name="sensor-collector", daemon=True)
         self.source = source
         self.backend = backend
@@ -41,6 +41,7 @@ class Collector(threading.Thread):
         self.device_reads = {}  # 设备 ID -> 进行中的读取 (Future), 每台设备同时只读一次
         self.device_lock = threading.Lock()
         self.device_latest = {}  # 设备 ID -> (读取对象, 最近一次结果); 由线程池回调写入
+        self.login_state = login_state
 
     def configure(self, settings):
         with self.lock:
@@ -95,7 +96,7 @@ class Collector(threading.Thread):
         for cfg in active:
             kind = cfg.get("type", "openwrt")
             if cfg["id"] not in self.routers or self.device_types.get(cfg["id"]) != kind:
-                self.routers[cfg["id"]] = (tplink.Router() if kind == "tplink" else remote.Device() if kind == "hwmonitor" else
+                self.routers[cfg["id"]] = (tplink.Router(self.login_state) if kind == "tplink" else remote.Device() if kind == "hwmonitor" else
                                             self.router if cfg["id"] == "primary" else openwrt.Router())
             self.device_types[cfg["id"]] = kind
             if kind == "tplink":

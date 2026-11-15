@@ -38,6 +38,33 @@ def number(value, default, low, high):
         return default
 
 
+def canonical_origin(value):
+    """scheme://host[:port]，忽略默认端口、主机名大小写和末尾点。
+
+    同一台管理页面的不同写法必须得到同一个键，登录冷却和锁定才能跟着走。
+    """
+    if not isinstance(value, str):
+        return None
+    try:
+        parts = urlsplit(value.strip())
+        port = parts.port  # 校验端口范围。
+    except ValueError:
+        return None
+    scheme = parts.scheme.lower()
+    host = parts.hostname
+    if scheme not in ("http", "https") or not host or parts.netloc.endswith(":"):
+        return None
+    if parts.username is not None or parts.password is not None:
+        return None
+    host = host.rstrip(".").lower()
+    if not host:
+        return None
+    default = 443 if scheme == "https" else 80
+    bracket = f"[{host}]" if ":" in host else host
+    netloc = bracket if port in (None, default) else f"{bracket}:{port}"
+    return f"{scheme}://{netloc}"
+
+
 def device_url(value, kind="openwrt"):
     if not isinstance(value, str) or len(value.strip()) > 200:
         return None
@@ -47,9 +74,8 @@ def device_url(value, kind="openwrt"):
         if parts.scheme.lower() not in ("http", "https") or not parts.hostname or parts.netloc.endswith(":"):
             return None
         if kind == "tplink":
-            if parts.username is not None or parts.password is not None:
-                return None
-            parts = parts._replace(path="", query="", fragment="")
+            # 路径、查询和写法差异都不构成另一台路由器。
+            return canonical_origin(value)
         if kind == "hwmonitor" and parts.path in ("", "/"):
             parts = parts._replace(path="/data.json")
         return urlunsplit(parts)

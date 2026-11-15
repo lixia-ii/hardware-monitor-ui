@@ -104,6 +104,25 @@ test("reconnect works when SubmitEvent.submitter is unavailable", async () => {
   assert.equal(device.enabled, true);
 });
 
+test("invalid reconnect click does not force the next ordinary save", async () => {
+  const f = fixture();
+  f.form.checkValidity = () => false;
+  f.node("#device-reconnect").handlers.click();
+  await f.submit("");
+  const device = f.saved[0].changes.routers[0];
+  assert.equal(device.reconnect, false);
+  assert.equal(device.enabled, false);
+});
+
+test("closing the dialog clears a reconnect click", async () => {
+  const f = fixture();
+  f.node("#device-reconnect").handlers.click();
+  f.node("#device-dialog").handlers.close();
+  await f.submit("");
+  assert.equal(f.saved[0].changes.routers[0].reconnect, false);
+  assert.equal(f.saved[0].changes.routers[0].enabled, false);
+});
+
 test("failed reconnect keeps edits open and re-enables both save buttons", async () => {
   const f = fixture("tplink", new Error("设备密码无法保存，请重新输入"));
   await f.submit("reconnect");

@@ -116,26 +116,29 @@ class TPLinkTests(unittest.TestCase):
             self.assertFalse(self.read()["offline"])
             self.assertEqual(post.call_args.args[1], "/stok=new/ds")
 
-    def test_disconnect_clears_values_and_backs_off(self):
+    def test_disconnect_retries_the_same_session_without_a_password(self):
         with patch.object(self.router, "_post", side_effect=[
-                {"error_code": 0, "stok": "ok"}, WAN, {"error_code": -1}, OSError("down"),
-                {"error_code": 0, "stok": "new"}, WAN, {"error_code": -1}]) as post:
+                {"error_code": 0, "stok": "ok"}, WAN, {"error_code": -1}, TimeoutError("slow"),
+                WAN, {"error_code": -1}]) as post:
             self.read()
             self.now.return_value = 104
             result = self.read()
             self.assertTrue(result["offline"])
             self.assertIsNone(result["up"])
             self.assertIsNone(result["clients"])
+            self.assertEqual(self.router.session, "ok")
+            self.assertIsNone(self.router.blocked)
             self.read()
-            self.assertEqual(post.call_count, 4)
-            self.now.return_value = 164
+            self.assertEqual(post.call_count, 4)  # Still inside the session retry wait.
+            self.now.return_value = 134
             self.assertFalse(self.read()["offline"])
+            self.assertEqual(post.call_args.args[1], "/stok=ok/ds")
+            self.assertNotIn("login", post.call_args.args[2])
 
     def test_reboot_errors_discard_old_session_and_reauthenticate(self):
-        # Firmware may reject a pre-reboot stok with HTTP/non-JSON responses or
-        # non-auth error codes. None of these should pin retries to the dead stok.
-        for failure in (OSError("connection refused"), http.client.RemoteDisconnected(),
-                        HTTPError("http://router/stok=old/ds", 404, "Not Found", {}, None),
+        # A missing stok path, non-JSON body or protocol rejection means that login
+        # is gone. A timeout or HTTP 5xx does not: those retry the same session.
+        for failure in (HTTPError("http://router/stok=old/ds", 404, "Not Found", {}, None),
                         ValueError("non-JSON response"), {"error_code": -1}, {"error_code": 0}):
             with self.subTest(failure=type(failure).__name__):
                 self.router = tplink.Router()
@@ -158,6 +161,32 @@ class TPLinkTests(unittest.TestCase):
                     self.assertFalse(self.read()["offline"])
                     self.assertEqual(post.call_args_list[4].args[1], "/")
                     self.assertEqual(post.call_args_list[5].args[1], "/stok=after-reboot/ds")
+
+    def test_transport_blip_keeps_the_verified_session(self):
+        for failure in (OSError("connection refused"), http.client.RemoteDisconnected(),
+                        TimeoutError("slow"),
+                        HTTPError("http://router/stok=old/ds", 500, "Busy", {}, None)):
+            with self.subTest(failure=type(failure).__name__):
+                self.router = tplink.Router()
+                self.now.return_value = 100
+                hosts = {"error_code": 0, "hosts_info": {"online_host": []}}
+                with patch.object(self.router, "_post", side_effect=[
+                        {"error_code": 0, "stok": "before-reboot"}, WAN, hosts,
+                        failure, WAN, hosts]) as post:
+                    self.assertFalse(self.read()["offline"])
+                    self.now.return_value = 104
+                    failed = self.read()
+                    self.assertTrue(failed["offline"])
+                    self.assertEqual(self.router.session, "before-reboot")
+                    self.assertIsNone(self.router.blocked)
+                    self.assertIn("暂不重新登录", failed["status"])
+                    self.now.return_value = 133
+                    self.read()
+                    self.assertEqual(post.call_count, 4)
+                    self.now.return_value = 134
+                    self.assertFalse(self.read()["offline"])
+                    self.assertEqual(post.call_args.args[1], "/stok=before-reboot/ds")
+                    self.assertNotIn("login", post.call_args.args[2])
 
     def test_repeated_outages_probe_without_ever_sending_password(self):
         with patch.object(self.router, "_probe", side_effect=OSError("still booting")) as probe, \
@@ -203,10 +232,10 @@ class TPLinkTests(unittest.TestCase):
             self.assertFalse(self.read()["offline"])
 
     def test_readiness_probe_accepts_any_live_page_response(self):
-        # Some firmware redirects / to /login.html, challenges with 401/403, or
-        # answers 204; all mean the management server is up. Only hard failures
-        # (4xx/5xx) and transport errors keep the readiness wait going.
-        for status in (301, 302, 401, 403):
+        # Some firmware redirects / to /login.html or answers 204; both mean the
+        # management server is up. 401/403 can be a lockout, so they must not
+        # count as ready. Hard failures and transport errors keep the wait going.
+        for status in (301, 302):
             with self.subTest(status=status):
                 with patch.object(self.router.opener, "open",
                                   side_effect=HTTPError("http://router/", status, "no body", {}, None)):
@@ -217,7 +246,7 @@ class TPLinkTests(unittest.TestCase):
         response.read.return_value = b""  # 204 No Content
         with patch.object(self.router.opener, "open", return_value=response):
             REAL_PROBE(self.router, "http://router", 2)
-        for status in (404, 500, 503):
+        for status in (401, 403, 404, 500, 503):
             with self.subTest(status=status):
                 with patch.object(self.router.opener, "open",
                                   side_effect=HTTPError("http://router/", status, "down", {}, None)):
@@ -230,6 +259,10 @@ class TPLinkTests(unittest.TestCase):
             self.now.return_value = 105
             # Re-encrypting the password for the same router keeps the cooldown.
             self.assertIn("冷却", self.read("re-encrypted", url="http://192.168.0.1")["status"])
+            self.assertEqual(post.call_count, 1)
+            # Default port, case and a trailing dot are the same management host.
+            for url in ("http://192.168.0.1:80", "HTTP://192.168.0.1.", "http://192.168.0.1"):
+                self.assertIn("冷却", self.read("re-encrypted-again", url=url)["status"])
             self.assertEqual(post.call_count, 1)
             # A corrected address is a different router, so the login may be tried.
             self.assertIn("登录失败", self.read(url="http://192.168.1.1")["status"])
@@ -353,6 +386,9 @@ class TPLinkTests(unittest.TestCase):
                 if state["booting"]:
                     self.reply(503, b"<html>Booting</html>")
                     return
+                if "/stok=" in self.path and state.get("reject_session"):
+                    self.reply(404, b"gone")
+                    return
                 if "login" in body:
                     state["logins"] += 1
                     result = {"error_code": 0, "stok": f"session-{state['logins']}"}
@@ -377,20 +413,37 @@ class TPLinkTests(unittest.TestCase):
                 self.assertFalse(self.read(url=url)["offline"])
                 self.assertEqual(state["logins"], 1)
                 state["booting"] = True
-                for now in (120, 179, 180, 210):
-                    self.now.return_value = now
-                    self.assertTrue(self.read(url=url)["offline"])
-                    self.assertEqual(state["logins"], 1)
-                self.assertEqual(sum(method == "POST" for method, _, _ in state["requests"]), 4)
-                state["booting"] = False
-                self.now.return_value = 240
+                self.now.return_value = 120
+                self.assertTrue(self.read(url=url)["offline"])
+                self.assertEqual(state["logins"], 1)
+                self.assertIsNotNone(self.router.session)
+                self.now.return_value = 149
                 self.read(url=url)
                 self.assertEqual(state["logins"], 1)
-                self.now.return_value = 250
+                self.assertFalse(any(method == "POST" and isinstance(body, dict) and "login" in body
+                                     for method, _, body in state["requests"][3:]))
+                state["booting"] = False
+                self.now.return_value = 150
+                self.assertFalse(self.read(url=url)["offline"])
+                self.assertEqual(state["logins"], 1)  # Slow 503 reused the session; no new password.
+                state["reject_session"] = True
+                self.now.return_value = 152
+                failed = self.read(url=url)
+                self.assertTrue(failed["offline"])
+                self.assertIsNone(self.router.session)
+                self.assertEqual(state["logins"], 1)
+                self.now.return_value = 211
+                self.read(url=url)
+                self.assertEqual(state["logins"], 1)
+                state["reject_session"] = False
+                self.now.return_value = 212
+                self.read(url=url)  # Page is up; wait for the stability interval.
+                self.assertEqual(state["logins"], 1)
+                self.now.return_value = 222
                 self.assertFalse(self.read(url=url)["offline"])
                 self.assertEqual(state["logins"], 2)
                 state["locked"] = True
-                self.now.return_value = 252
+                self.now.return_value = 224
                 self.assertIn("已锁定", self.read(url=url)["status"])
                 requests = len(state["requests"])
                 self.now.return_value = 10000
@@ -516,6 +569,9 @@ class TPLinkTests(unittest.TestCase):
         self.assertNotIn("password", cfg["routers"][0])
         self.assertEqual(cfg["router"], settings.DEFAULT_ROUTER)
         self.assertIsNone(settings.device_url("http://user:pass@router", "tplink"))
+        self.assertEqual(settings.device_url("http://192.168.0.1:80", "tplink"), "http://192.168.0.1")
+        self.assertEqual(settings.device_url("HTTP://192.168.0.1.", "tplink"), "http://192.168.0.1")
+        self.assertEqual(settings.device_url("http://Router.Local:8080", "tplink"), "http://router.local:8080")
 
     def test_collector_routes_credentials_without_including_them_in_results(self):
         cfg = settings.validate({"routers": [{"id": "tp", "type": "tplink", "enabled": True, "password_protected": "cipher"}]})
@@ -524,6 +580,64 @@ class TPLinkTests(unittest.TestCase):
             result = worker._read_routers(cfg)
             read.assert_called_once_with("http://192.168.0.1", password_protected="cipher")
             self.assertNotIn("cipher", json.dumps(result))
+
+    def test_first_hosts_session_expiry_reconnects_instead_of_pausing(self):
+        for failure in ({"error_code": -40403}, {"error_code": -40401},
+                        {"error_code": -40401, "data": {"code": -40403}}):
+            with self.subTest(failure=failure):
+                self.router = tplink.Router()
+                self.now.return_value = 100
+                with patch.object(self.router, "_post", side_effect=[
+                        {"error_code": 0, "stok": "ok"}, WAN, failure,
+                        {"error_code": 0, "stok": "new"}, WAN, {"error_code": -1}]) as post:
+                    result = self.read()
+                    self.assertIn("会话失效", result["status"])
+                    self.assertIsNone(self.router.blocked)
+                    self.now.return_value = 159
+                    self.read()
+                    self.assertEqual(post.call_count, 3)
+                    self.now.return_value = 160
+                    self.assertFalse(self.read()["offline"])
+                    self.assertEqual(post.call_args_list[3].args[1], "/")
+
+    def test_forbidden_probe_never_sends_password(self):
+        for status in (401, 403):
+            with self.subTest(status=status):
+                self.router = tplink.Router()
+                self.now.return_value = 100
+                with patch.object(tplink.Router, "_probe", lambda self, base, timeout: REAL_PROBE(self, base, timeout)), \
+                        patch.object(self.router.opener, "open",
+                                     side_effect=HTTPError("http://router/", status, "locked", {}, None)), \
+                        patch.object(self.router, "_post") as post:
+                    self.assertIn("暂不发送登录密码", self.read()["status"])
+                    self.now.return_value = 10000
+                    self.read()
+                    post.assert_not_called()
+
+    def test_login_latch_survives_a_new_router(self):
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / "tplink-login.json"
+            wall = {"now": 1_700_000_000.0}
+            with patch.object(tplink.time, "time", side_effect=lambda: wall["now"]):
+                first = tplink.Router(path)
+                with patch.object(first, "_post", return_value={"error_code": -40401}) as post:
+                    self.assertIn("登录失败", first.read("http://192.168.0.1", password_protected="cipher")["status"])
+                    self.assertEqual(post.call_count, 1)
+                second = tplink.Router(path)
+                with patch.object(second, "_post") as post:
+                    wall["now"] += 10
+                    self.now.return_value = 110
+                    paused = second.read("http://192.168.0.1:80", password_protected="cipher")
+                    self.assertIn("已暂停", paused["status"])
+                    post.assert_not_called()
+                    # Manual retry clears the latch but must not skip the remaining cooldown.
+                    self.assertIn("冷却", second.read("HTTP://192.168.0.1.", password_protected="re-encrypted")["status"])
+                    post.assert_not_called()
+                    self.now.return_value = 160
+                    wall["now"] += 50
+                    with patch.object(second, "_post", side_effect=[
+                            {"error_code": 0, "stok": "again"}, WAN, {"error_code": -1}]):
+                        self.assertFalse(second.read("http://192.168.0.1", password_protected="re-encrypted")["offline"])
 
 
 @unittest.skipUnless(sys.platform == "win32", "Windows DPAPI")

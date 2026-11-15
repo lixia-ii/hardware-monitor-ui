@@ -195,6 +195,7 @@ function deviceFields(cfg) {
   const password=$("#device-form [name=password]"); if(password) {password.autocomplete="new-password";password.maxLength=256;}
 }
 function openDevice(id) {
+  reconnectClicked=false;
   editorDevice=id?snapshot.settings.routers.find(d=>d.id===id):{id:"web-"+[...crypto.getRandomValues(new Uint8Array(16))].map(v=>v.toString(16).padStart(2,"0")).join(""),name:"新设备",type:"openwrt",url:"http://192.168.1.1:9100/metrics",enabled:false,nic:null};
   editingRevision=snapshot.revision;
   $("#delete-device").hidden=!id; $("#device-title").textContent=id?"编辑设备":"添加设备";
@@ -317,11 +318,18 @@ $("#device-form").addEventListener("change",event=>{
   const url={openwrt:"http://192.168.1.1:9100/metrics",tplink:"http://192.168.0.1",hwmonitor:"http://192.168.1.2:8085/data.json"}[kind];
   deviceFields({...editorDevice,name,type:kind,url,enabled:false,password_saved:false});
 });
-$("#device-dialog").addEventListener("cancel",event=>{if(dirty&&!confirm("放弃设备修改？"))event.preventDefault();else dirty=false;});
+$("#device-dialog").addEventListener("cancel",event=>{if(dirty&&!confirm("放弃设备修改？"))event.preventDefault();else{dirty=false;reconnectClicked=false;}});
 // Some browsers omit SubmitEvent.submitter; the click still tells us which button
 // submitted, so the reconnect action must not silently degrade to an ordinary save.
+// Validation can block submit after the click, and closing the dialog must not
+// leave that click stuck to the next ordinary save.
 let reconnectClicked=false;
-$("#device-reconnect").addEventListener("click",()=>{reconnectClicked=true;});
+$("#device-reconnect").addEventListener("click",()=>{
+  const form=$("#device-form");
+  reconnectClicked=typeof form.checkValidity!=="function"||form.checkValidity();
+});
+$("#device-form").addEventListener("invalid",()=>{reconnectClicked=false;},true);
+$("#device-dialog").addEventListener("close",()=>{reconnectClicked=false;});
 $("#device-form").addEventListener("submit",async event=>{
   event.preventDefault();const f=event.target,buttons=$$('[type=submit]',f);buttons.forEach(b=>b.disabled=true);
   const d={id:editorDevice.id,name:f.elements.name.value.trim(),type:f.elements.type.value,url:f.elements.url.value.trim(),enabled:f.elements.enabled.checked,nic:f.elements.nic?.value.trim()||null};

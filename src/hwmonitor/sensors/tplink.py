@@ -10,13 +10,18 @@ import http.client
 import json
 import logging
 import math
+import os
 import re
+import tempfile
+import threading
 import time
 import urllib.error
 import urllib.request
+from pathlib import Path
 from urllib.parse import quote, unquote
 
 from hwmonitor.sensors.openwrt import empty_reading as router_empty
+from hwmonitor.settings import canonical_origin
 from hwmonitor.system import credentials
 
 _KEY = "RDpbLfCPsJZ7fiv"
@@ -28,6 +33,10 @@ _RECONNECT_DELAY = 60
 _LOGIN_INTERVAL = 60
 _READY_INTERVAL = 10
 _PROBE_INTERVAL = 30
+# A verified session that times out or gets HTTP 5xx is still the same login.
+# Retry that stok; do not spend another password attempt on a slow router.
+_SESSION_RETRY_DELAY = 30
+_state_lock = threading.Lock()
 log = logging.getLogger(__name__)
 
 
@@ -131,6 +140,43 @@ def parse_terminals(payload):
     return sorted(terminals.values(), key=lambda t: (-(t["up"] or 0) - (t["down_rate"] or 0), t["id"]))
 
 
+def _login_origin(url):
+    """Cooldown identity. Equivalent spellings of one management host stay together."""
+    return canonical_origin(url) or url
+
+
+def _read_login_state(path):
+    try:
+        data = json.loads(Path(path).read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return {}
+    return data if isinstance(data, dict) else {}
+
+
+def _write_login_state(path, data):
+    path = Path(path)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    temp = None
+    try:
+        with tempfile.NamedTemporaryFile(mode="w", encoding="utf-8", dir=path.parent, delete=False) as handle:
+            temp = handle.name
+            json.dump(data, handle, ensure_ascii=False, allow_nan=False)
+            handle.flush()
+            os.fsync(handle.fileno())
+        os.replace(temp, path)
+        temp = None
+    finally:
+        if temp and os.path.exists(temp):
+            os.unlink(temp)
+
+
+def _keeps_session(error):
+    """Timeouts and 5xx do not prove the stok is dead. 4xx and garbage bodies do."""
+    if isinstance(error, urllib.error.HTTPError):
+        return error.code >= 500 or error.code in (408, 429)
+    return isinstance(error, OSError)
+
+
 def _clients(payload):
     info = payload.get("hosts_info", {})
     if not isinstance(info, dict):
@@ -149,7 +195,8 @@ def _clients(payload):
 
 
 class Router:
-    def __init__(self):
+    def __init__(self, state_path=None):
+        self.state_path = state_path
         self.identity = None
         self.session = None
         self.blocked = None
@@ -186,8 +233,9 @@ class Router:
     def _probe(self, base, timeout):
         """Check the public page without a password, stok, cookies or auth requests.
 
-        Redirects (some firmware sends GET / to /login.html), authentication
-        challenges and empty 2xx bodies all prove the management server is up.
+        Redirects (some firmware sends GET / to /login.html) and empty 2xx bodies
+        prove the management server is up. HTTP 401/403 can be a lockout rather
+        than a login form, so they must not be followed by a password POST.
         Redirects are never followed, so credentials cannot be forwarded to
         another host.
         """
@@ -196,7 +244,7 @@ class Router:
             with self.opener.open(request, timeout=timeout) as response:
                 response.read(1)
         except urllib.error.HTTPError as error:
-            ready = error.code in (401, 403) or 300 <= error.code < 400
+            ready = 300 <= error.code < 400
             error.close()
             if not ready:
                 raise
@@ -212,6 +260,7 @@ class Router:
         self.session_verified = False
         self.ready_since = None
         self.blocked = status
+        self._remember()
         return self._offline(status)
 
     def _reconnect(self, now):
@@ -252,20 +301,79 @@ class Router:
             return self._pause("新会话未能读取状态，已暂停自动登录；请检查管理页面后手动重连" + suffix)
         return self._reconnect(now)
 
+    def _remember(self):
+        """Persist the latch and cooldown so a restart cannot immediately send the password."""
+        if not self.state_path or not self.identity:
+            return
+        origin = self.identity[0]
+        now = time.time()
+        remaining = self.login_after - time.monotonic()
+        until = now + remaining if remaining > 0 else None
+        blocked = self.blocked if isinstance(self.blocked, str) and self.blocked else None
+        try:
+            with _state_lock:
+                data = _read_login_state(self.state_path)
+                fresh = {}
+                for key, record in data.items():
+                    if key == origin or not isinstance(record, dict):
+                        continue
+                    record_until = record.get("login_until")
+                    still_blocked = bool(record.get("blocked"))
+                    still_cooling = isinstance(record_until, (int, float)) and not isinstance(record_until, bool) and record_until > now
+                    if still_blocked or still_cooling:
+                        fresh[key] = record
+                record = {}
+                if blocked:
+                    record["blocked"] = blocked[:240]
+                if until is not None:
+                    record["login_until"] = until
+                if record:
+                    fresh[origin] = record
+                _write_login_state(self.state_path, fresh)
+        except OSError as error:
+            self._log_exception("state", error)
+
+    def _restore(self, origin):
+        if not self.state_path or not origin:
+            return
+        record = _read_login_state(self.state_path).get(origin)
+        if not isinstance(record, dict):
+            return
+        until = record.get("login_until")
+        if isinstance(until, (int, float)) and not isinstance(until, bool):
+            remaining = until - time.time()
+            if remaining > 0:
+                self.login_after = max(self.login_after, time.monotonic() + remaining)
+        blocked = record.get("blocked")
+        if isinstance(blocked, str) and blocked:
+            self.blocked = blocked[:240]
+            self.cached = empty_reading(self.blocked)
+
     def read(self, url, nic=None, timeout=2.0, *, password_protected=""):
-        identity = (url, password_protected)
+        origin = _login_origin(url)
+        identity = (origin, password_protected)
         if self.identity != identity:
             # A corrected address belongs to a different router, so its login
             # cooldown must not carry over. Re-encrypting the password for the
             # same address must keep the cooldown to prevent repeated logins.
-            if self.identity is None or self.identity[0] != url:
+            # Equivalent spellings (default port, case, trailing dot) are the same host.
+            same_origin = self.identity is not None and self.identity[0] == origin
+            if not same_origin:
                 self.login_after = 0
+                self.blocked = None
+                self._restore(origin)
+            else:
+                self.blocked = None
+                self._remember()
             self.identity = identity
-            self.session = self.blocked = None
+            self.session = None
             self.session_verified = False
             self.ready_since = None
             self.next_at = 0
-            self._offline("正在检查路由器管理页面")
+            if self.blocked:
+                self.cached = empty_reading(self.blocked)
+            else:
+                self._offline("正在检查路由器管理页面")
         if not password_protected:
             return empty_reading("请在设置中输入密码")
         if self.blocked:
@@ -302,6 +410,7 @@ class Router:
                     return self._pause("密码无法读取，已暂停；请重新输入密码")
                 # Set before sending: a lost response may still have reached the router.
                 self.login_after = time.monotonic() + _LOGIN_INTERVAL
+                self._remember()
                 result = self._post(url, "/", {"method": "do", "login": {"password": encode_password(password)}}, timeout)
                 failure = self._check_result(result, phase, now)
                 if failure is not None:
@@ -317,6 +426,9 @@ class Router:
             if failure is not None:
                 return failure
             r = parse_wan(result)
+            # WAN proved this stok. A session-expired code on the optional host
+            # table must reconnect, not permanently pause a session that just worked.
+            self.session_verified = True
             if now >= self.clients_at:
                 self.clients_at = now + 2
                 self.clients = self.terminals = self.terminals_sample_time = None
@@ -348,5 +460,8 @@ class Router:
                 return self._pause("登录结果无法确认，已暂停自动登录；请检查管理页面后手动重连")
             if not self.session_verified:
                 return self._pause("新会话状态异常，已暂停自动登录；请检查管理页面后手动重连")
+            if _keeps_session(error):
+                self.next_at = now + _SESSION_RETRY_DELAY
+                return self._offline(f"连接暂时中断，{_SESSION_RETRY_DELAY} 秒后使用当前会话重试；暂不重新登录")
             return self._reconnect(now)
         return dict(self.cached)

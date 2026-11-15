@@ -30,7 +30,8 @@ class Controller(ManagementActions):
         self.web = WebServer()
         self.management = ManagementServer(host=host)
         self.web_bridge = self.management.bridge = Bridge()
-        self.collector = Collector(options, web=self.web, backend=backend)
+        self.collector = Collector(options, web=self.web, backend=backend,
+                                   login_state=paths.DATA / "tplink-login.json")
         self.port = port
         self.stopping = threading.Event()
 

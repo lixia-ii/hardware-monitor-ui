@@ -168,7 +168,8 @@ class MainWindow(WebManagementMixin, SettingsDialogMixin, CustomizeDialogMixin, 
         self._management_firewall = None
         self._firewall = None
         self.collector = Collector(self.settings, web=self.web,
-                                   backend=None if "--self-test" in sys.argv else WindowsBackend(lhm.Sensors()))
+                                   backend=None if "--self-test" in sys.argv else WindowsBackend(lhm.Sensors()),
+                                   login_state=paths.DATA / "tplink-login.json")
         self.collector.start()
         self._storage_notice = None
         self._apply_display()
