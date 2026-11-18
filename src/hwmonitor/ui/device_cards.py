@@ -4,7 +4,7 @@ import tkinter as tk
 from tkinter import ttk
 
 from hwmonitor.ui.display import fmt_duration, fmt_gb, fmt_rate, temp_color
-from hwmonitor.ui.theme import BORDER, CARD, FG, FIELD, FONT, MUTED, NUM, RED, SUB
+from hwmonitor.ui.theme import BORDER, CARD, FG, FIELD, MUTED, RED, SUB, WAN_OK, ON_FG, font as ui_font
 
 
 class DeviceCardsMixin:
@@ -48,7 +48,7 @@ class DeviceCardsMixin:
         metrics = tk.Frame(head, bg=CARD)
         metrics.grid(row=0, column=2)
         def chip(text, column):
-            label = tk.Label(metrics, text=text, bg=FIELD, fg=SUB, font=(NUM, 8),
+            label = tk.Label(metrics, text=text, bg=FIELD, fg=SUB, font=ui_font(8, numeric=True),
                              width=6, padx="2p", pady="1p", anchor="center")
             label.grid(row=0, column=column, padx=(0 if column == 0 else "3p", 0))
             return label
@@ -71,10 +71,10 @@ class DeviceCardsMixin:
         for column, (key, arrow) in enumerate(zip(keys, ("↑", "↓"))):
             group = tk.Frame(rates_frame, bg=CARD)
             group.grid(row=0, column=column, padx=(0 if column == 0 else "4p", 0))
-            tk.Label(group, text=arrow, bg=CARD, fg=SUB, font=(NUM, 8)).pack(side="left")
-            num = tk.Label(group, text="--", bg=CARD, fg=FG, font=(NUM, 9, "bold"), width=4, anchor="e")
+            tk.Label(group, text=arrow, bg=CARD, fg=SUB, font=ui_font(8, numeric=True)).pack(side="left")
+            num = tk.Label(group, text="--", bg=CARD, fg=FG, font=ui_font(9, "bold", numeric=True), width=4, anchor="e")
             num.pack(side="left")
-            unit = tk.Label(group, bg=CARD, fg=MUTED, font=(NUM, 7), width=4, anchor="w")
+            unit = tk.Label(group, bg=CARD, fg=MUTED, font=ui_font(7, numeric=True), width=4, anchor="w")
             unit.pack(side="left", padx=("1p", 0))
             rates[key] = (num, unit)
         box.title_label.bind("<Configure>", lambda _: self._fit_device_name(box))
@@ -129,7 +129,7 @@ class DeviceCardsMixin:
                            ("uptime", "运行时间"), ("nic", "WAN 网卡"), ("net", "WAN 网速")):
             frame = tk.Frame(parent, bg=CARD)
             frame.pack(fill="x", pady="1p")
-            tk.Label(frame, text=title, bg=CARD, fg=SUB, font=(FONT, 9)).pack(side="left")
+            tk.Label(frame, text=title, bg=CARD, fg=SUB, font=ui_font(9)).pack(side="left")
             vals[key] = self._value(frame)
         return vals
 
@@ -222,14 +222,14 @@ class DeviceCardsMixin:
         net = self._rate_text(data, "down_rate", "up")
         rows = [("status", "连接状态", status, RED if data["offline"] else FG, None),
                 ("wan_status", "联网状态", "--" if data["offline"] else wan_labels.get(data.get("wan_status"), "未知"),
-                 RED if data.get("wan_connected") is False else "#86efac" if data.get("wan_connected") else FG, None),
+                 RED if data.get("wan_connected") is False else WAN_OK if data.get("wan_connected") else FG, None),
                 ("clients", "在线设备", "--" if clients is None else str(clients), MUTED if clients is None else FG, None),
                 ("wan_uptime", "WAN 在线时长", fmt_duration(data.get("wan_uptime")), FG, None),
                 ("wan_ip", "WAN IP", data.get("wan_ip") or "--", FG if data.get("wan_ip") else MUTED, None),
-                ("net", "WAN 网速", net, MUTED if net == "--" else "#93c5fd", None)]
+                ("net", "WAN 网速", net, MUTED if net == "--" else ON_FG, None)]
         def make_value(parent):
             label = self._value(parent)
-            label.config(font=(FONT, 9), justify="right", wraplength="180p")
+            label.config(font=ui_font(9), justify="right", wraplength="180p")
             parent.bind("<Configure>", lambda _: label.config(wraplength=max(
                 60, parent.winfo_width() - parent.winfo_children()[0].winfo_reqwidth() - parent.winfo_pixels("12p"))))
             return label
@@ -266,9 +266,9 @@ class DeviceCardsMixin:
             frame.grid(row=row, column=column, columnspan=2 if wide else 1, sticky="nsew",
                        padx=(0 if wide or column == 0 else "3p", 0 if wide or column else "3p"),
                        pady=(0, "4p"))
-            title.config(bg=frame.cget("bg"), fg=MUTED, font=(FONT, 8))
+            title.config(bg=frame.cget("bg"), fg=MUTED, font=ui_font(8))
             value.pack_forget()
-            value.config(bg=frame.cget("bg"), font=(FONT, 9), anchor="w", justify="left")
+            value.config(bg=frame.cget("bg"), font=ui_font(9), anchor="w", justify="left")
             if wide:
                 value.pack(side="right")
             else:
@@ -287,8 +287,8 @@ class DeviceCardsMixin:
             heading = tk.Frame(box, bg=CARD)
             heading.pack(fill="x", pady=("7p", "6p"))
             tk.Label(heading, text="终端流量", bg=CARD, fg=FG,
-                     font=(FONT, 9, "bold")).pack(side="left")
-            box.terminal_range = tk.Label(heading, text="按总流量排序", bg=CARD, fg=MUTED, font=(FONT, 8))
+                     font=ui_font(9, "bold")).pack(side="left")
+            box.terminal_range = tk.Label(heading, text="按总流量排序", bg=CARD, fg=MUTED, font=ui_font(8))
             box.terminal_range.pack(side="right")
             box.terminal_panel = tk.Frame(box, bg=CARD)
             box.terminal_panel.pack(fill="x")
@@ -329,7 +329,7 @@ class DeviceCardsMixin:
             tree.tag_configure("odd", background=CARD)
             box.terminal_tree = tree
             from tkinter import font
-            name_font = font.Font(font=(FONT, 8))
+            name_font = font.Font(font=ui_font(8))
             def fit_columns(_=None):
                 # 按控件实际宽度分配, 避免 Treeview 的默认最小列宽把下载列挤出窗口。
                 available = max(3, tree.winfo_width() - 2)
@@ -346,7 +346,7 @@ class DeviceCardsMixin:
             box.fit_terminal_columns = fit_columns
             tree.bind("<Configure>", fit_columns)
             tree.bind("<Button-1>", lambda event: "break" if tree.identify_region(event.x, event.y) == "separator" else None)
-            box.terminal_note = tk.Label(box, bg=CARD, fg=MUTED, font=(FONT, 8), anchor="w", justify="left", wraplength="260p")
+            box.terminal_note = tk.Label(box, bg=CARD, fg=MUTED, font=ui_font(8), anchor="w", justify="left", wraplength="260p")
             box.terminal_note.pack(fill="x", pady=("4p", 0))
             def details(_=None):
                 selected = tree.selection()

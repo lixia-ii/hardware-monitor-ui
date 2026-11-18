@@ -10,7 +10,7 @@ import tkinter as tk
 from types import SimpleNamespace
 
 from hwmonitor.ui.display import fmt_gb, fmt_rate, temp_color
-from hwmonitor.ui.theme import BORDER, CARD, FG, FONT, MUTED, NUM, SUB, TRACK
+from hwmonitor.ui.theme import BORDER, CARD, FG, MEM_BAR, MUTED, RATE_FAST, RATE_GB, SERIES_CPU, SERIES_GPU, SUB, TRACK, font as ui_font
 
 SNAP = "24p"  # 松手时离工作区边缘这么近就吸附 (Tk 距离, 随 DPI 缩放)
 STRIP = 4  # 隐藏后露出的细边宽度
@@ -71,6 +71,23 @@ def work_area(win, x, y):
         user = ctypes.windll.user32
         user.GetMonitorInfoW.argtypes = [ctypes.c_void_p, ctypes.POINTER(_MonitorInfo)]
         if user.GetMonitorInfoW(_monitor_at(x, y), ctypes.byref(info)):
+            r = info.rcWork
+            return r.left, r.top, r.right, r.bottom
+    except (AttributeError, OSError):
+        pass
+    return 0, 0, win.winfo_screenwidth(), win.winfo_screenheight()
+
+
+def primary_work_area(win):
+    """主显示器去掉任务栏后的区域。保存的悬浮窗坐标已经不在任何屏幕上时用它。"""
+    try:
+        user = ctypes.windll.user32
+        user.MonitorFromPoint.argtypes = [wt.POINT, wt.DWORD]
+        user.MonitorFromPoint.restype = ctypes.c_void_p
+        user.GetMonitorInfoW.argtypes = [ctypes.c_void_p, ctypes.POINTER(_MonitorInfo)]
+        info = _MonitorInfo(cbSize=ctypes.sizeof(_MonitorInfo))
+        monitor = user.MonitorFromPoint(wt.POINT(0, 0), 1)  # MONITOR_DEFAULTTOPRIMARY
+        if user.GetMonitorInfoW(monitor, ctypes.byref(info)):
             r = info.rcWork
             return r.left, r.top, r.right, r.bottom
     except (AttributeError, OSError):
@@ -236,7 +253,7 @@ class FloatingWindow(tk.Toplevel):
         self.attributes("-topmost", options["topmost"])
         self.body = tk.Frame(self, bg=CARD, padx="8p", pady="6p")
         tk.Frame(self.body, bg=CARD, width="120p", height=0).pack()  # 固定宽度, 数值变长时窗口不伸缩, 贴右边时不错位
-        self.rows = {"cpu": self._device_row("CPU", "#60a5fa"), "gpu": self._device_row("显卡", "#a78bfa"),
+        self.rows = {"cpu": self._device_row("CPU", SERIES_CPU), "gpu": self._device_row("显卡", SERIES_GPU),
                      "mem": self._mem_row(), "net": self._net_row()}
         self.strip = tk.Frame(self, bg=MUTED, cursor="hand2")  # 缩进后露出的细边
         self.strip.bind("<Enter>", lambda _: self.covered or self.menu_open or self.shared or self.reveal())
@@ -262,7 +279,7 @@ class FloatingWindow(tk.Toplevel):
         top = tk.Frame(row, bg=CARD)
         top.pack(fill="x")
         top.columnconfigure(1, weight=1)
-        tk.Label(top, text=name, bg=CARD, fg=MUTED, font=(FONT, 8), width=4, anchor="w").grid(row=0, column=0, sticky="sw", pady=(0, "1p"))
+        tk.Label(top, text=name, bg=CARD, fg=MUTED, font=ui_font(8), width=4, anchor="w").grid(row=0, column=0, sticky="sw", pady=(0, "1p"))
         return row, top
 
     @staticmethod
@@ -303,23 +320,23 @@ class FloatingWindow(tk.Toplevel):
         bar.coords(bar.fill, r, r, r + (w - h) * bar.frac, r)
 
     def _load(self, top):
-        load = self._pair(top, (NUM, 10, "bold"), (NUM, 7), "%")
+        load = self._pair(top, ui_font(10, "bold", numeric=True), ui_font(7, numeric=True), "%")
         load.grid(row=0, column=3, sticky="se", padx=("4p", 0))
         return load
 
     def _device_row(self, name, color):
         row, top = self._line(name)
-        value = self._pair(top, (NUM, 13, "bold"), (NUM, 8), "°C", MUTED, top=True)
+        value = self._pair(top, ui_font(13, "bold", numeric=True), ui_font(8, numeric=True), "°C", MUTED, top=True)
         value.grid(row=0, column=1, sticky="sw")
-        fan = tk.Label(top, text="", bg=CARD, fg=MUTED, font=(NUM, 8), anchor="e")
+        fan = tk.Label(top, text="", bg=CARD, fg=MUTED, font=ui_font(8, numeric=True), anchor="e")
         fan.grid(row=0, column=2, sticky="se", padx=("4p", 0), pady=(0, "1p"))
         return SimpleNamespace(frame=row, value=value, load=self._load(top), fan=fan, bar=self._bar(row, color))
 
     def _mem_row(self):
         row, top = self._line("内存")
-        gb = tk.Label(top, text="", bg=CARD, fg=SUB, font=(NUM, 9), anchor="w")
+        gb = tk.Label(top, text="", bg=CARD, fg=SUB, font=ui_font(9, numeric=True), anchor="w")
         gb.grid(row=0, column=1, columnspan=2, sticky="sw", pady=(0, "1p"))
-        return SimpleNamespace(frame=row, gb=gb, load=self._load(top), bar=self._bar(row, "#34d399"))
+        return SimpleNamespace(frame=row, gb=gb, load=self._load(top), bar=self._bar(row, MEM_BAR))
 
     def _net_row(self):
         row, top = self._line("网络")
@@ -328,11 +345,11 @@ class FloatingWindow(tk.Toplevel):
         cells.grid(row=0, column=1, columnspan=3, sticky="ew")
         cells.columnconfigure((0, 1), weight=1, uniform="net")
         out = []
-        for col, (arrow, color) in enumerate((("↑", "#fb923c"), ("↓", "#22d3ee"))):
+        for col, (arrow, color) in enumerate((("↑", RATE_GB), ("↓", RATE_FAST))):
             cell = tk.Frame(cells, bg=CARD)
             cell.grid(row=0, column=col, sticky="e")
-            tk.Label(cell, text=arrow, bg=CARD, fg=color, font=(NUM, 9, "bold")).pack(side="left", anchor="s")
-            out.append(self._pair(cell, (NUM, 9, "bold"), (NUM, 7), ""))
+            tk.Label(cell, text=arrow, bg=CARD, fg=color, font=ui_font(9, "bold", numeric=True)).pack(side="left", anchor="s")
+            out.append(self._pair(cell, ui_font(9, "bold", numeric=True), ui_font(7, numeric=True), ""))
             out[-1].pack(side="left", anchor="s", padx=("1p", 0))
         return SimpleNamespace(frame=row, up=out[0], down=out[1])
 
@@ -386,6 +403,9 @@ class FloatingWindow(tk.Toplevel):
         """把窗口放到 (x, y), 收回屏幕内并吸附到附近的边, 记下贴住的边用于自动隐藏。"""
         self.update_idletasks()
         w, h = self.winfo_reqwidth(), self.winfo_reqheight()
+        if not _monitor_at(x + w // 2, y + h // 2, nearest=False):
+            left, top, _, _ = primary_work_area(self)
+            x, y = left + 40, top + 40
         self.work = work_area(self, x + w // 2, y + h // 2)
         x, y, edge = snap(x, y, w, h, self.work, self.winfo_pixels(SNAP))
         self.edge = edge

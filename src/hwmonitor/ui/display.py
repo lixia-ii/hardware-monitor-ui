@@ -1,6 +1,7 @@
 """界面显示用的名称和格式: 指标/分组默认名称、数值格式化、按温度着色和收起分组的摘要。"""
 import re
 
+from hwmonitor.ui import theme
 from hwmonitor.ui.theme import FG, MUTED, RED
 
 from hwmonitor.core.metadata import METRIC_NAMES, GROUP_NAMES
@@ -32,12 +33,12 @@ def fmt_rate(b):
     for unit in ("B/s", "KB/s", "MB/s"):
         if b < 1000:
             num = f"{b:.1f}" if b < 10 and unit != "B/s" else f"{b:.0f}"
-            color = FG if unit == "MB/s" else MUTED
+            color = theme.FG if unit == "MB/s" else theme.MUTED
             if unit == "MB/s" and b >= 50:
-                color = "#22d3ee"
+                color = theme.RATE_FAST
             return num, unit, color
         b /= 1024
-    return f"{b:.1f}", "GB/s", "#fb923c"
+    return f"{b:.1f}", "GB/s", theme.RATE_GB
 
 
 def fmt_gb(used, total):
@@ -50,7 +51,7 @@ def fmt_gb(used, total):
 def temp_color(t):
     if t is None:
         return MUTED
-    return "#4ade80" if t < 60 else "#fbbf24" if t < 80 else RED
+    return theme.TEMP_OK if t < 60 else theme.TEMP_WARM if t < 80 else theme.RED
 
 
 def temp_summary(temps):

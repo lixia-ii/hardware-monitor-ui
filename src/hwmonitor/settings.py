@@ -27,6 +27,7 @@ DEFAULTS = {"close_action": "ask", "topmost": False, "collapsed": [], "floating"
             "routers": [{**DEFAULT_ROUTER, "id": "primary", "name": "路由器 1"}],
             "web": {"enabled": False, "lan": False, "port": 8085},
             "management": DEFAULT_MANAGEMENT,
+            "appearance": "dark", "font_size": "normal", "ui_scale": 100,
             "window": None}
 
 
@@ -116,6 +117,12 @@ def validate(raw):
     for key in ("history_enabled", "topmost"):
         if isinstance(raw.get(key), bool):
             out[key] = raw[key]
+    if raw.get("appearance") in ("dark", "light", "system"):
+        out["appearance"] = raw["appearance"]
+    if raw.get("font_size") in ("small", "normal", "large"):
+        out["font_size"] = raw["font_size"]
+    if raw.get("ui_scale") in (100, 125, 150, 175, 200) and not isinstance(raw.get("ui_scale"), bool):
+        out["ui_scale"] = int(raw["ui_scale"])
     router = raw.get("router")
     if isinstance(router, dict):
         out["router"]["enabled"] = router.get("enabled") is True
@@ -182,7 +189,8 @@ def validate(raw):
         out["window"] = {"width": int(number(w["width"], 0, 100, 20000)),
                          "height": int(number(w["height"], 0, 100, 20000)),
                          "x": int(number(w["x"], 0, -100000, 100000)),
-                         "y": int(number(w["y"], 0, -100000, 100000))}
+                         "y": int(number(w["y"], 0, -100000, 100000)),
+                         "zoomed": w.get("zoomed") is True}
     alerts = raw.get("alerts")
     if isinstance(alerts, dict):
         for k, default in DEFAULT_ALERTS.items():

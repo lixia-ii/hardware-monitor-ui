@@ -29,7 +29,7 @@ from hwmonitor.ui.floating import FloatingWindowMixin
 from hwmonitor.ui.history_dialog import HistoryDialogMixin
 from hwmonitor.ui.info_window import InfoWindowMixin
 from hwmonitor.ui.settings_dialog import SettingsDialogMixin
-from hwmonitor.ui.theme import (BG, BORDER, CARD, CHIP_HOVER, ERR_BG, ERR_BORDER, FG, FIELD, FONT, MUTED, NUM,
+from hwmonitor.ui.theme import (BG, BORDER, CARD, CHIP_HOVER, ERR_BG, ERR_BORDER, FG, FIELD, MUTED,
                                 RED, SUB, TRACK, set_icon)
 
 
@@ -53,6 +53,9 @@ class MainWindow(WebManagementMixin, SettingsDialogMixin, CustomizeDialogMixin, 
         if self.hidden_start:
             r.withdraw()
         self.settings = settings.load()
+        theme.use_font(self.settings["font_size"])
+        theme.apply_scale(r, self.settings["ui_scale"])
+        theme.apply_appearance(self.settings["appearance"])
         self.root.report_callback_exception = lambda *args: logging.getLogger(__name__).error("Tk callback failed", exc_info=args)
         self.pawnio_missing = False  # 用户暂不安装 PawnIO 时, 提示条常驻"安装"按钮
         self._pairing_notice = ""  # 网页管理端待使用的配对码, 有效期内常驻提示条
@@ -118,7 +121,7 @@ class MainWindow(WebManagementMixin, SettingsDialogMixin, CustomizeDialogMixin, 
         self.notice = tk.Frame(self.footer, bg=ERR_BG, padx="8p", pady="5p",
                                highlightthickness=1, highlightbackground=ERR_BORDER)
         self.notice.columnconfigure(0, weight=1)
-        self.status = tk.Label(self.notice, text="", bg=ERR_BG, fg=RED, font=(FONT, 9),
+        self.status = tk.Label(self.notice, text="", bg=ERR_BG, fg=RED, font=theme.font(9),
                                wraplength="120p", justify="left", anchor="w")
         self.status.grid(row=0, column=0, sticky="ew")
         self.action_btn = ttk.Button(self.notice, text="安装", style="Accent.TButton", width=7,  # 定宽, 切换文字时不跳
@@ -197,8 +200,8 @@ class MainWindow(WebManagementMixin, SettingsDialogMixin, CustomizeDialogMixin, 
         box.place(relx=0.5, rely=0.45, anchor="center")
         track = tk.Frame(box, bg=TRACK, width=box.winfo_pixels("160p"), height=box.winfo_pixels("3p"))
         track.pack()
-        tk.Label(box, text="加载中…", bg=BG, fg=SUB, font=(FONT, 9)).pack(pady=("10p", 0))
-        self._splash_fill = tk.Frame(track, bg="#60a5fa")
+        tk.Label(box, text="加载中…", bg=BG, fg=SUB, font=theme.font(9)).pack(pady=("10p", 0))
+        self._splash_fill = tk.Frame(track, bg=theme.SERIES_CPU)
         self._splash_start = time.monotonic()
         self._splash_step()
 
@@ -360,11 +363,14 @@ class MainWindow(WebManagementMixin, SettingsDialogMixin, CustomizeDialogMixin, 
         saved = self.settings.get("window")
         if saved and on_screen(saved["x"] + saved["width"] // 2, saved["y"] + r.winfo_pixels("10p")):
             w, h, x, y = max(min_w, saved["width"]), max(min_h, saved["height"]), saved["x"], saved["y"]
+            r.geometry(f"{w}x{h}+{x}+{y}")
+            if saved.get("zoomed"):
+                r.state("zoomed")
         else:
             w = min_w
             h = max(min_h, min(r.winfo_pixels("440p"), r.winfo_screenheight() - r.winfo_pixels("80p")))
             x, y = max(0, (r.winfo_screenwidth() - w) // 2), max(0, (r.winfo_screenheight() - h) // 2)
-        r.geometry(f"{w}x{h}+{x}+{y}")
+            r.geometry(f"{w}x{h}+{x}+{y}")
 
     def _schedule_geometry_save(self, event):
         """用户拖动或缩放窗口后稍等再保存, 拖动过程中不反复写盘。"""
@@ -377,12 +383,24 @@ class MainWindow(WebManagementMixin, SettingsDialogMixin, CustomizeDialogMixin, 
     def _save_geometry(self):
         self._geometry_job = None
         r = self.root
-        if r.state() != "normal" or not r.winfo_viewable():  # 最大化、最小化、隐藏时保留原来的普通尺寸
+        if not r.winfo_viewable():  # 最小化、隐藏时保留原来的普通尺寸
+            return
+        if r.state() == "zoomed":
+            current = self.settings.get("window")
+            if not current:
+                return
+            window = {**current, "zoomed": True}
+            if window != current:
+                self.settings["window"] = window
+                self._save_settings()
+            return
+        if r.state() != "normal":
             return
         m = re.fullmatch(r"(\d+)x(\d+)\+(-?\d+)\+(-?\d+)", r.geometry())
         if not m:
             return
         window = dict(zip(("width", "height", "x", "y"), map(int, m.groups())))
+        window["zoomed"] = False
         if window != self.settings.get("window"):
             self.settings["window"] = window
             self._save_settings()
@@ -476,19 +494,19 @@ class MainWindow(WebManagementMixin, SettingsDialogMixin, CustomizeDialogMixin, 
         # 主卡片保持自然高度，收起分组或拉高窗口时不产生卡片内空白。
         row.pack(fill="x")
         row.rowconfigure(0, weight=1)
-        for i, (dev, name, accent) in enumerate((("cpu", "CPU", "#60a5fa"), ("gpu", "显卡", "#a78bfa"))):
+        for i, (dev, name, accent) in enumerate((("cpu", "CPU", theme.SERIES_CPU), ("gpu", "显卡", theme.SERIES_GPU))):
             row.columnconfigure(i, weight=1, uniform="dev")
             card = tk.Frame(row, bg=CARD, padx="10p", pady="8p", highlightthickness=1, highlightbackground=BORDER)
             # 两侧各留一半间距, 两张卡片才一样宽 (padx 也算在 uniform 列宽里)
             card.grid(row=0, column=i, sticky="nsew", padx=(0, "3p") if i == 0 else ("3p", 0))
             head = tk.Frame(card, bg=CARD)
             head.pack(fill="x")
-            title_label = tk.Label(head, text=name, bg=CARD, fg=MUTED, font=(FONT, 10, "bold"))
+            title_label = tk.Label(head, text=name, bg=CARD, fg=MUTED, font=theme.font(10, "bold"))
             title_label.pack(side="left")
             self.metric_titles[dev + "_temp"] = title_label
             if dev == "gpu":  # 显卡型号标签在卡片右上角; 多显卡时点击弹出菜单选择
                 # 不用 Menubutton: 按钮本体不认深色配色; 弹出菜单跟随 dark_menus 的系统深色主题
-                chip = self.gpu_chip = tk.Label(head, bg=TRACK, fg=FG, font=(FONT, 9), padx="5p")
+                chip = self.gpu_chip = tk.Label(head, bg=TRACK, fg=FG, font=theme.font(9), padx="5p")
                 chip.bind("<Button-1>", self._gpu_menu)
                 chip.bind("<Enter>", lambda _: len(self.gpu_list) > 1 and chip.config(bg=CHIP_HOVER))
                 chip.bind("<Leave>", lambda _: chip.config(bg=TRACK))
@@ -496,22 +514,22 @@ class MainWindow(WebManagementMixin, SettingsDialogMixin, CustomizeDialogMixin, 
             temp = tk.Frame(card, bg=CARD)
             temp.pack(anchor="w", pady=("2p", "2p"))
             self.metric_blocks[dev + "_temp"] = [temp]
-            self.values[f"{dev}_temp"] = tk.Label(temp, text="--", bg=CARD, fg=MUTED, font=(NUM, 24, "bold"))
+            self.values[f"{dev}_temp"] = tk.Label(temp, text="--", bg=CARD, fg=MUTED, font=theme.font(24, "bold", numeric=True))
             self.values[f"{dev}_temp"].pack(side="left")
             # 单位用小字, 底部对齐到数字基线附近
-            self.values[f"{dev}_temp_unit"] = tk.Label(temp, text="°C", bg=CARD, fg=MUTED, font=(NUM, 12, "bold"))
+            self.values[f"{dev}_temp_unit"] = tk.Label(temp, text="°C", bg=CARD, fg=MUTED, font=theme.font(12, "bold", numeric=True))
             self.values[f"{dev}_temp_unit"].pack(side="left", anchor="s", pady=(0, "6p"))
             for kind, title in (("load", "利用率"), ("mem_load", "内存" if dev == "cpu" else "显存"), ("fan", "风扇")):
                 key = f"{dev}_{kind}" if dev == "gpu" or kind != "mem_load" else "mem_load"
                 f = tk.Frame(card, bg=CARD)
                 f.pack(fill="x", pady=("4p", 0))
-                title_label = tk.Label(f, text=title, bg=CARD, fg=SUB, font=(FONT, 9))
+                title_label = tk.Label(f, text=title, bg=CARD, fg=SUB, font=theme.font(9))
                 title_label.pack(side="left")
                 self.metric_titles[key] = title_label
                 self.metric_blocks[key] = [f]
                 self.values[key] = self._value(f)
                 if kind == "mem_load":  # 已用/总量, 小字放在百分比左边
-                    self.values[key + "_gb"] = tk.Label(f, text="", bg=CARD, fg=MUTED, font=(NUM, 8))
+                    self.values[key + "_gb"] = tk.Label(f, text="", bg=CARD, fg=MUTED, font=theme.font(8, numeric=True))
                     self.values[key + "_gb"].pack(side="right", padx=(0, "4p"))
                 if kind != "fan":
                     track = tk.Frame(card, bg=TRACK, height="3p")
@@ -580,7 +598,7 @@ class MainWindow(WebManagementMixin, SettingsDialogMixin, CustomizeDialogMixin, 
                          fg=MUTED if collapse_key else CARD, font=glyph_font)
         gap = head.winfo_pixels("4p")
         arrow.pack(side="left", padx=(0, gap))
-        title_label = tk.Label(head, text=title, bg=CARD, fg=MUTED, font=(FONT, 9, "bold"))
+        title_label = tk.Label(head, text=title, bg=CARD, fg=MUTED, font=theme.font(9, "bold"))
         title_label.pack(side="left")
         body = tk.Frame(card, bg=CARD)
         body.head = head
@@ -588,11 +606,11 @@ class MainWindow(WebManagementMixin, SettingsDialogMixin, CustomizeDialogMixin, 
         body.title_label = title_label
         # 收起后的摘要: [MAX] 粗体数字 + 小号单位, 与网速、设备徽标的样式一致
         body.summary = summary = tk.Frame(head, bg=CARD)
-        summary.unit = tk.Label(summary, text="", bg=CARD, fg=FG, font=(NUM, 8, "bold"), width=3, anchor="w")
+        summary.unit = tk.Label(summary, text="", bg=CARD, fg=FG, font=theme.font(8, "bold", numeric=True), width=3, anchor="w")
         summary.unit.pack(side="right", anchor="s", pady=(0, "1p"))
-        summary.num = tk.Label(summary, text="", bg=CARD, fg=FG, font=(NUM, 10, "bold"))
+        summary.num = tk.Label(summary, text="", bg=CARD, fg=FG, font=theme.font(10, "bold", numeric=True))
         summary.num.pack(side="right", padx=(0, "2p"))
-        summary.tag = tk.Label(summary, text="", bg=FIELD, fg=SUB, font=(NUM, 7, "bold"), padx="3p", pady=0)
+        summary.tag = tk.Label(summary, text="", bg=FIELD, fg=SUB, font=theme.font(7, "bold", numeric=True), padx="3p", pady=0)
         summary.parts = ("", "", "", FG)
         # 内容行与标题文字左对齐 (箭头悬在左侧), 层级一目了然
         body_pack = {"fill": "x", "pady": ("4p", 0), "padx": (arrow.winfo_reqwidth() + gap, 0)}
@@ -647,9 +665,9 @@ class MainWindow(WebManagementMixin, SettingsDialogMixin, CustomizeDialogMixin, 
         if not hasattr(self, "_chevron_glyphs"):
             from tkinter import font
             if "Segoe MDL2 Assets" in font.families(self.root):
-                self._chevron_glyphs = ("", "", ("Segoe MDL2 Assets", 7))  # ChevronDownMed / ChevronRightMed
+                self._chevron_glyphs = ("", "", theme.font(7, family="Segoe MDL2 Assets"))  # ChevronDownMed / ChevronRightMed
             else:
-                self._chevron_glyphs = ("▾", "▸", (FONT, 10))
+                self._chevron_glyphs = ("▾", "▸", theme.font(10))
         return self._chevron_glyphs
 
     @staticmethod
@@ -674,11 +692,11 @@ class MainWindow(WebManagementMixin, SettingsDialogMixin, CustomizeDialogMixin, 
         labels = {}
         for key, arrow in ((down, "↓"), (up, "↑")):  # 从右往左排, 上传显示在左侧
             # 单位小字、随量级变色, 数字粗体; 各自定宽, 位数或单位变化时不跳
-            unit = tk.Label(head, text="", bg=CARD, fg=MUTED, font=(NUM, 8, "bold"), width=4, anchor="w")
+            unit = tk.Label(head, text="", bg=CARD, fg=MUTED, font=theme.font(8, "bold", numeric=True), width=4, anchor="w")
             unit.pack(side="right", anchor="s", pady=(0, "1p"))
-            num = tk.Label(head, text="--", bg=CARD, fg=MUTED, font=(NUM, 10 if compact else 11, "bold"), width=4, anchor="e")
+            num = tk.Label(head, text="--", bg=CARD, fg=MUTED, font=theme.font(10 if compact else 11, "bold", numeric=True), width=4, anchor="e")
             num.pack(side="right", padx=(0, 0 if compact else "2p"))
-            tk.Label(head, text=arrow, bg=CARD, fg=MUTED, font=(FONT, 9)).pack(
+            tk.Label(head, text=arrow, bg=CARD, fg=MUTED, font=theme.font(9)).pack(
                 side="right", padx=(("1p" if key == down else 0) if compact else ("10p" if key == down else "6p"), 0))
             labels[key] = (num, unit)
         return labels
@@ -686,7 +704,7 @@ class MainWindow(WebManagementMixin, SettingsDialogMixin, CustomizeDialogMixin, 
     @staticmethod
     def _value(parent):
         """右对齐的数值标签。"""
-        v = tk.Label(parent, text="--", bg=CARD, fg=FG, font=(NUM, 10, "bold"))
+        v = tk.Label(parent, text="--", bg=CARD, fg=FG, font=theme.font(10, "bold", numeric=True))
         v.pack(side="right")
         return v
 
@@ -776,11 +794,11 @@ class MainWindow(WebManagementMixin, SettingsDialogMixin, CustomizeDialogMixin, 
                 w.destroy()
             box._keys, box._vals = keys, {}
             if not rows:
-                tk.Label(box, text=empty_text, bg=CARD, fg=MUTED, font=(FONT, 9)).pack(anchor="w")
+                tk.Label(box, text=empty_text, bg=CARD, fg=MUTED, font=theme.font(9)).pack(anchor="w")
             for key, name, _, _ in rows:
                 f = tk.Frame(box, bg=CARD)
                 f.pack(fill="x", pady="1p")
-                tk.Label(f, text=name, bg=CARD, fg=SUB, font=(FONT, 9)).pack(side="left")
+                tk.Label(f, text=name, bg=CARD, fg=SUB, font=theme.font(9)).pack(side="left")
                 box._vals[key] = make_value(f)
         for key, _, text, color in rows:
             self._set(box._vals[key], text, color)

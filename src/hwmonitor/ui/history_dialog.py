@@ -6,7 +6,7 @@ from tkinter import filedialog, ttk
 
 from hwmonitor.core import history
 from hwmonitor.ui.display import short_gpu
-from hwmonitor.ui.theme import BG, CARD, FONT, MUTED, NUM, TRACK, set_icon
+from hwmonitor.ui.theme import BG, CARD, MUTED, SERIES_CPU, SERIES_GPU, TEMP_OK, TEMP_WARM, TRACK, set_icon, font as ui_font
 
 
 class HistoryDialogMixin:
@@ -40,18 +40,18 @@ class HistoryDialogMixin:
         summary_note.grid(row=1, column=2, columnspan=4, pady=(8, 0), sticky="w")
         def display_interval():
             return intervals.get(interval.get(), 300 if span.get() == "24 小时" else 30)
-        scope = ttk.Label(w, font=(FONT, 10, "bold"), padding=(10, 2, 10, 6))
+        scope = ttk.Label(w, font=ui_font(10, "bold"), padding=(10, 2, 10, 6))
         scope.pack(fill="x")
         legend = ttk.Frame(w, padding=(10, 0, 10, 6))
         legend.pack(fill="x")
         legend.columnconfigure(4, weight=1)
         legend_labels = {}
-        for key, name, color in (("cpu", "CPU", "#60a5fa"), ("memory", "内存", "#4ade80"),
-                                 ("vram", "显存", "#fbbf24"), ("upload", "上传", "#60a5fa"),
-                                 ("download", "下载", "#a78bfa")):
+        for key, name, color in (("cpu", "CPU", SERIES_CPU), ("memory", "内存", TEMP_OK),
+                                 ("vram", "显存", TEMP_WARM), ("upload", "上传", SERIES_CPU),
+                                 ("download", "下载", SERIES_GPU)):
             legend_labels[key] = ttk.Label(legend, text="● " + name, foreground=color)
         gpu_group = ttk.Frame(legend)
-        gpu_label = ttk.Label(gpu_group, text="● 显卡", foreground="#a78bfa", wraplength=w.winfo_pixels("200p"))
+        gpu_label = ttk.Label(gpu_group, text="● 显卡", foreground=SERIES_GPU, wraplength=w.winfo_pixels("200p"))
         gpu_label.pack(side="left")
         gpu = ttk.Combobox(gpu_group, textvariable=gpu_var, state="readonly", width=20)
         gpu_note = ttk.Label(w, style="Hint.TLabel", padding=(10, 0, 10, 6))
@@ -138,9 +138,9 @@ class HistoryDialogMixin:
                 if metric.get() == "利用率":
                     legend_labels["memory"].grid(row=0, column=2, sticky="w", padx=(0, 18))
                     legend_labels["vram"].grid(row=0, column=3, sticky="w")
-            specs = {"温度": (("cpu_temp", "CPU", "#60a5fa"), ("gpu_temp", "显卡", "#a78bfa")),
-                     "利用率": (("cpu_load", "CPU", "#60a5fa"), ("gpu_load", "显卡", "#a78bfa"), ("mem_load", "内存", "#4ade80"), ("gpu_mem_load", "显存", "#fbbf24")),
-                     "网络": (("net_up", "上传", "#60a5fa"), ("net_down", "下载", "#a78bfa"))}[metric.get()]
+            specs = {"温度": (("cpu_temp", "CPU", SERIES_CPU), ("gpu_temp", "显卡", SERIES_GPU)),
+                     "利用率": (("cpu_load", "CPU", SERIES_CPU), ("gpu_load", "显卡", SERIES_GPU), ("mem_load", "内存", TEMP_OK), ("gpu_mem_load", "显存", TEMP_WARM)),
+                     "网络": (("net_up", "上传", SERIES_CPU), ("net_down", "下载", SERIES_GPU))}[metric.get()]
             unit = {"温度": "°C", "利用率": "%", "网络": "MB/s"}[metric.get()]
             factor = 1024 ** 2 if metric.get() == "网络" else 1
             width, height = max(canvas.winfo_width(), 200), max(canvas.winfo_height(), 150)
@@ -175,22 +175,22 @@ class HistoryDialogMixin:
                 canvas.create_rectangle(0, panel_top, width, panel_top + panel_height,
                                         fill=CARD, outline="", tags="panel")
                 canvas.create_text(px(10), panel_top + px(11), text="● " + name, anchor="w",
-                                   fill=color, font=(FONT, 9, "bold"))
+                                   fill=color, font=ui_font(9, "bold"))
                 peak = line_cache["peaks"][key]
                 canvas.create_text(right, panel_top + px(11),
                                    text=f"最高 {peak / factor:.1f} {unit}" if peak is not None else "暂无数据",
-                                   anchor="e", fill=MUTED, font=(NUM, 8))
+                                   anchor="e", fill=MUTED, font=ui_font(8, numeric=True))
                 ticks = (0, .5, 1) if bottom - top >= px(45) else (0, 1)
                 for fraction in ticks:
                     value = hi * fraction
                     y = bottom - (bottom - top) * fraction
                     label = f"{value:.0f}" if metric.get() == "利用率" else f"{value:.2f}" if hi < 1 else f"{value:.1f}"
-                    canvas.create_text(left - px(6), y, text=label, anchor="e", fill=MUTED, font=(NUM, 8))
+                    canvas.create_text(left - px(6), y, text=label, anchor="e", fill=MUTED, font=ui_font(8, numeric=True))
                     canvas.create_line(left, y, right, y, fill=TRACK)
                 canvas.create_line(left, top, left, bottom, fill=TRACK)
                 if peak is None:
                     canvas.create_text((left + right) / 2, (top + bottom) / 2,
-                                       text="当前范围暂无数据", fill=MUTED, font=(FONT, 9))
+                                       text="当前范围暂无数据", fill=MUTED, font=ui_font(9))
                 for run in runs:
                     pts = []
                     for t, v in run:
@@ -208,7 +208,7 @@ class HistoryDialogMixin:
                 t = start + (end - start) * i / 4
                 label = span.get() + "前" if i == 0 else "现在" if i == 4 else time.strftime("%H:%M", time.localtime(t))
                 canvas.create_text(left + (right - left) * i / 4, height - px(8), text=label,
-                                   anchor="w" if i == 0 else "e" if i == 4 else "center", fill=MUTED, font=(NUM, 8))
+                                   anchor="w" if i == 0 else "e" if i == 4 else "center", fill=MUTED, font=ui_font(8, numeric=True))
             hover_points.sort(key=lambda point: point[0])
             chart.update(view=view, rows=rows, times=snapshot["times"], start=start, end=end, left=left, right=right,
                          specs=specs, selected_ids=selected_ids, factor=factor, unit=unit, panels=panels, interval=seconds,
@@ -250,6 +250,7 @@ class HistoryDialogMixin:
                 v = values.get(key)
                 items.append(name + (f" {v / c['factor']:.1f}{c['unit']}" if v is not None else " --"))
             hover_text.set(" · ".join(items))
+        self._redraw_history = draw
         def schedule(*_):
             if pending[0] is not None:
                 w.after_cancel(pending[0])

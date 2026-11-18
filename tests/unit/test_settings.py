@@ -1,5 +1,6 @@
 """设置校验、原子保存与旧数据迁移。"""
 from pathlib import Path
+import sys
 import tempfile
 import unittest
 from unittest.mock import patch
@@ -69,12 +70,44 @@ class SettingsTests(unittest.TestCase):
         self.assertTrue(settings.validate({"topmost": True})["topmost"])
         self.assertFalse(settings.validate({"topmost": 1})["topmost"])
 
+    def test_appearance_font_and_scale(self):
+        self.assertEqual(settings.DEFAULTS["appearance"], "dark")
+        self.assertEqual(settings.DEFAULTS["font_size"], "normal")
+        self.assertEqual(settings.DEFAULTS["ui_scale"], 100)
+        cfg = settings.validate({"appearance": "system", "font_size": "large", "ui_scale": 150})
+        self.assertEqual((cfg["appearance"], cfg["font_size"], cfg["ui_scale"]), ("system", "large", 150))
+        cfg = settings.validate({"appearance": "blue", "font_size": "huge", "ui_scale": 110})
+        self.assertEqual((cfg["appearance"], cfg["font_size"], cfg["ui_scale"]), ("dark", "normal", 100))
+        self.assertEqual(settings.validate({"ui_scale": 100.0})["ui_scale"], 100)
+
+    def test_theme_palette_and_font_factor(self):
+        if sys.platform != "win32":
+            self.skipTest("界面主题依赖 Tk")
+        from hwmonitor.ui import theme
+        self.assertEqual(set(theme.DARK), set(theme.LIGHT))
+        mapping = theme.color_map(theme.DARK, theme.LIGHT)
+        self.assertEqual(mapping["#16181d"], theme.LIGHT["BG"])
+        self.assertEqual(mapping["#3b82f6"], theme.LIGHT["ON_BORDER"])  # 重复色值保留先出现的键
+        previous = theme._font_factor
+        try:
+            theme.use_font("small")
+            self.assertEqual(theme.font(10)[1], 9)
+            theme.use_font("large")
+            self.assertEqual(theme.font(8)[1], 9)
+            self.assertEqual(theme.resolve_appearance("light"), "light")
+            self.assertEqual(theme.resolve_appearance("nope"), "dark")
+        finally:
+            theme._font_factor = previous
+
     def test_window_geometry(self):
         for bad in (None, [], {"width": 300}, {"width": True, "height": 400, "x": 0, "y": 0},
                     {"width": "300", "height": 400, "x": 0, "y": 0}):
             self.assertIsNone(settings.validate({"window": bad})["window"])
         window = settings.validate({"window": {"width": 10, "height": 500.7, "x": -1920, "y": 40}})["window"]
-        self.assertEqual(window, {"width": 100, "height": 500, "x": -1920, "y": 40})
+        self.assertEqual(window, {"width": 100, "height": 500, "x": -1920, "y": 40, "zoomed": False})
+        zoomed = settings.validate({"window": {"width": 400, "height": 300, "x": 10, "y": 20, "zoomed": True}})["window"]
+        self.assertTrue(zoomed["zoomed"])
+        self.assertFalse(settings.validate({"window": {"width": 400, "height": 300, "x": 0, "y": 0, "zoomed": 1}})["window"]["zoomed"])
 
     def test_empty_gpu_id_means_automatic(self):
         self.assertIsNone(settings.validate({"gpu_id": ""})["gpu_id"])

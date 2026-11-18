@@ -5,7 +5,7 @@ import tkinter as tk
 from tkinter import ttk
 
 from hwmonitor.sensors import hwinfo
-from hwmonitor.ui.theme import BG, MUTED, set_icon
+from hwmonitor.ui.theme import BG, MUTED, set_icon, font as ui_font
 
 
 class InfoWindowMixin:
@@ -30,7 +30,7 @@ class InfoWindowMixin:
             cards.columnconfigure(i, weight=1, uniform="card")
             box = ttk.LabelFrame(cards, text=title, padding=10)
             box.grid(row=0, column=i, sticky="nsew", padx=(0 if i == 0 else 6, 0))
-            vals[key] = ttk.Label(box, text="读取中...", font=("Microsoft YaHei UI", 10),
+            vals[key] = ttk.Label(box, text="读取中...", font=ui_font(10),
                                   wraplength=160, justify="center")
             vals[key].pack(expand=True)
 

@@ -3,7 +3,7 @@ import tkinter as tk
 from tkinter import ttk
 
 from hwmonitor.core.management import paginate
-from hwmonitor.ui.theme import BG, CARD, FG, FONT, MUTED, RED, set_icon
+from hwmonitor.ui.theme import BG, CARD, FG, MUTED, RED, SELECT, set_icon, font as ui_font
 
 
 class AlertsWindow(tk.Toplevel):
@@ -23,16 +23,16 @@ class AlertsWindow(tk.Toplevel):
 
         header = ttk.Frame(self, padding=(16, 14, 16, 10))
         header.pack(fill="x")
-        ttk.Label(header, text="最近告警", font=(FONT, 13, "bold")).pack(anchor="w")
+        ttk.Label(header, text="最近告警", font=ui_font(13, "bold")).pack(anchor="w")
         ttk.Label(header, text="保留最近 1000 条 · 重启后恢复 · 每页 20 条", style="Hint.TLabel").pack(anchor="w", pady=(4, 0))
         self.storage_note = ttk.Label(header, foreground=RED, wraplength=self.winfo_pixels("420p"))
         self.storage_note.pack(anchor="w")
 
         body = ttk.Frame(self, padding=(16, 0, 16, 0))
         body.pack(fill="both", expand=True)
-        self.text = tk.Text(body, bg=CARD, fg=FG, font=(FONT, 10), wrap="word", state="disabled", width=1, height=1,
+        self.text = tk.Text(body, bg=CARD, fg=FG, font=ui_font(10), wrap="word", state="disabled", width=1, height=1,
                             relief="flat", borderwidth=0, highlightthickness=0, padx=14, pady=12,
-                            selectbackground="#264b79", selectforeground=FG, cursor="arrow")
+                            selectbackground=SELECT, selectforeground=FG, cursor="arrow")
         scrollbar = ttk.Scrollbar(body, orient="vertical", command=self.text.yview)
         self.text.configure(yscrollcommand=scrollbar.set)
         scrollbar.pack(side="right", fill="y")

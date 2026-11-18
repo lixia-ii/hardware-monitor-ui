@@ -5,7 +5,7 @@ import threading
 import tkinter as tk
 from tkinter import ttk
 
-from hwmonitor.ui.theme import BG, FONT, set_icon
+from hwmonitor.ui.theme import BG, set_icon, font as ui_font
 
 
 class DialogMixin:
@@ -48,12 +48,21 @@ class DialogMixin:
         wait()
 
     def center_on_main(self, w):
-        """把 w 居中到主窗口中央 (主窗口在哪, 就在哪弹出)。"""
+        """把 w 放到主窗口所在显示器的工作区内，并尽量居中到主窗口。"""
+        from hwmonitor.ui.floating import work_area
         w.update_idletasks()
-        mw, mh = max(w.winfo_width(), w.minsize()[0]), max(w.winfo_height(), w.minsize()[1])
+        cx = self.root.winfo_rootx() + max(self.root.winfo_width(), 1) // 2
+        cy = self.root.winfo_rooty() + max(self.root.winfo_height(), 1) // 2
+        left, top, right, bottom = work_area(w, cx, cy)
+        max_w = max(200, right - left - 24)
+        max_h = max(160, bottom - top - 24)
+        mw = min(max(w.winfo_width(), w.minsize()[0]), max_w)
+        mh = min(max(w.winfo_height(), w.minsize()[1]), max_h)
         x = self.root.winfo_x() + (self.root.winfo_width() - mw) // 2
         y = self.root.winfo_y() + (self.root.winfo_height() - mh) // 2
-        w.geometry(f"+{max(0, min(x, w.winfo_screenwidth() - mw - 20))}+{max(0, min(y, w.winfo_screenheight() - mh - 70))}")
+        x = max(left, min(x, right - mw))
+        y = max(top, min(y, bottom - mh))
+        w.geometry(f"{mw}x{mh}+{x}+{y}")
 
     def _dialog(self, title, parent=None, resizable=False):
         """深色模态小窗。返回 (窗口, 内容框架); 内容填好后调用 _show_dialog。"""
@@ -87,7 +96,7 @@ class DialogMixin:
     def _confirm_delete_device(self, name):
         w, body = self._dialog("删除设备", parent=self.settings_win)
         result = []
-        ttk.Label(body, text=f"确定要删除设备“{name}”吗？", font=(FONT, 10),
+        ttk.Label(body, text=f"确定要删除设备“{name}”吗？", font=ui_font(10),
                   wraplength="280p", justify="left").pack(anchor="w")
         self._hint(body, "删除后将停止监控该设备。")
         buttons = ttk.Frame(body)
@@ -108,7 +117,7 @@ class DialogMixin:
         w, body = self._dialog("关闭硬件监控")
         result = []
         remember = tk.BooleanVar(value=False)
-        ttk.Label(body, text="要退出程序, 还是最小化到托盘?", font=(FONT, 10)).pack(anchor="w")
+        ttk.Label(body, text="要退出程序, 还是最小化到托盘?", font=ui_font(10)).pack(anchor="w")
         ttk.Label(body, text="最小化后点击右下角托盘图标可恢复窗口。", style="Hint.TLabel").pack(
             anchor="w", pady=("4p", "10p"))
         ttk.Checkbutton(body, text="记住我的选择 (可在「设置」中修改)", variable=remember,
@@ -135,7 +144,7 @@ class DialogMixin:
         result = []
         ttk.Label(body, text="需要安装 PawnIO 驱动才能读取 CPU 温度和主板风扇转速。" if state == "missing"
                   else "PawnIO 驱动版本过旧，更新后才能读取 CPU 温度和主板风扇转速。",
-                  font=(FONT, 10), wraplength="280p", justify="left").pack(anchor="w")
+                  font=ui_font(10), wraplength="280p", justify="left").pack(anchor="w")
         ttk.Label(body, text="PawnIO 是 LibreHardwareMonitor 使用的开源驱动，只需安装一次。\n"
                   "安装程序是英文界面，按提示点击确定即可。", style="Hint.TLabel", justify="left").pack(
             anchor="w", pady=("4p", "12p"))

@@ -1,4 +1,4 @@
-"""界面主题: 深色配色、字体、ttk 样式、窗口图标与标题栏, 以及开关/勾选框的自绘图片。"""
+"""界面主题: 深色/浅色配色、字体、ttk 样式、窗口图标与标题栏, 以及开关/勾选框的自绘图片。"""
 import ctypes
 import tkinter as tk
 from tkinter import ttk
@@ -7,24 +7,132 @@ from hwmonitor import paths
 
 ICON = str(paths.ICON)
 
-# 深色配色
-BG = "#16181d"
-CARD = "#20232a"
-BORDER = "#2c3039"
-TRACK = "#2f333d"
-FG = "#e6e8ee"
-MUTED = "#8a90a0"
-SUB = "#b4b9c5"  # 行名称: 比数值暗、比分组标题亮, 拉开层次
-RED = "#f87171"
-PIN = "#1e3a5f"  # 置顶按钮开启时的底色
-CHIP_HOVER = "#3a3f4b"
-ACCENT = "#2563eb"  # 主操作按钮
-FIELD = "#1b1d23"  # 卡片里的输入框底色
-ERR_BG = "#2a1d21"  # 错误提示条
-ERR_BORDER = "#4a2a2f"
-NAV_HOVER = "#1d2027"  # 设置导航项悬停
 FONT = "Microsoft YaHei UI"
 NUM = "Segoe UI"  # 数字等宽, 跳动时不抖
+FONT_FACTORS = {"small": 0.9, "normal": 1.0, "large": 1.15}
+SCALE_FACTORS = {100: 1.0, 125: 1.25, 150: 1.5, 175: 1.75, 200: 2.0}
+
+# 结构色在前。同一套配色里重复的色值，换主题时按先出现的键对应，避免控件被映射到另一个用途。
+DARK = {
+    "BG": "#16181d", "CARD": "#20232a", "BORDER": "#2c3039", "TRACK": "#2f333d",
+    "FG": "#e6e8ee", "MUTED": "#8a90a0", "SUB": "#b4b9c5", "RED": "#f87171",
+    "PIN": "#1e3a5f", "CHIP_HOVER": "#3a3f4b", "ACCENT": "#2563eb", "FIELD": "#1b1d23",
+    "ERR_BG": "#2a1d21", "ERR_BORDER": "#4a2a2f", "NAV_HOVER": "#1d2027",
+    "BUTTON_HOVER": "#2a2e37", "ON_FG": "#93c5fd", "ON_BORDER": "#3b82f6",
+    "ON_HOVER": "#24466f", "ON_PRESSED": "#1a3354", "INDICATOR_BORDER": "#5a6070",
+    "SCROLL_ACTIVE": "#4a505d", "ACCENT_HOVER": "#3b82f6", "ACCENT_PRESSED": "#1d4ed8",
+    "SELECTED_FG": "#bfdbfe", "WHITE": "#ffffff", "SELECT": "#264b79",
+    "SERIES_CPU": "#60a5fa", "SERIES_GPU": "#a78bfa", "TEMP_OK": "#4ade80", "TEMP_WARM": "#fbbf24",
+    "RATE_FAST": "#22d3ee", "RATE_GB": "#fb923c", "MEM_BAR": "#34d399", "WAN_OK": "#86efac",
+}
+LIGHT = {
+    "BG": "#f3f3f3", "CARD": "#ffffff", "BORDER": "#e5e5e5", "TRACK": "#e8e8ec",
+    "FG": "#1a1a1a", "MUTED": "#6b7280", "SUB": "#3f3f46", "RED": "#dc2626",
+    "PIN": "#dbeafe", "CHIP_HOVER": "#e4e4e7", "ACCENT": "#2563eb", "FIELD": "#f4f4f5",
+    "ERR_BG": "#fef2f2", "ERR_BORDER": "#fecaca", "NAV_HOVER": "#ececef",
+    "BUTTON_HOVER": "#e4e4e7", "ON_FG": "#1d4ed8", "ON_BORDER": "#2563eb",
+    "ON_HOVER": "#bfdbfe", "ON_PRESSED": "#93c5fd", "INDICATOR_BORDER": "#a1a1aa",
+    "SCROLL_ACTIVE": "#a1a1aa", "ACCENT_HOVER": "#3b82f6", "ACCENT_PRESSED": "#1d4ed8",
+    "SELECTED_FG": "#1e3a8a", "WHITE": "#ffffff", "SELECT": "#dbeafe",
+    "SERIES_CPU": "#1d4ed8", "SERIES_GPU": "#6d28d9", "TEMP_OK": "#15803d", "TEMP_WARM": "#b45309",
+    "RATE_FAST": "#0e7490", "RATE_GB": "#c2410c", "MEM_BAR": "#059669", "WAN_OK": "#15803d",
+}
+_current = dict(DARK)
+resolved = "dark"
+_font_factor = 1.0
+
+
+class Color:
+    """当前主题的颜色。导入后仍跟随主题切换，Tk 配置时取当时的色值。"""
+
+    def __init__(self, key):
+        self.key = key
+
+    def __str__(self):
+        return _current[self.key]
+
+    def __getitem__(self, item):
+        return str(self)[item]
+
+    def __repr__(self):
+        return str(self)
+
+    def __eq__(self, other):
+        if isinstance(other, Color):
+            return self.key == other.key
+        if isinstance(other, str):
+            return str(self).lower() == other.lower()
+        return NotImplemented
+
+    def __hash__(self):
+        return hash(self.key)
+
+
+BG, CARD, BORDER, TRACK, FG, MUTED, SUB, RED, PIN, CHIP_HOVER, ACCENT, FIELD, ERR_BG, ERR_BORDER, NAV_HOVER = (
+    Color(key) for key in ("BG", "CARD", "BORDER", "TRACK", "FG", "MUTED", "SUB", "RED", "PIN", "CHIP_HOVER",
+                           "ACCENT", "FIELD", "ERR_BG", "ERR_BORDER", "NAV_HOVER"))
+BUTTON_HOVER, ON_FG, ON_BORDER, ON_HOVER, ON_PRESSED, INDICATOR_BORDER = (
+    Color(key) for key in ("BUTTON_HOVER", "ON_FG", "ON_BORDER", "ON_HOVER", "ON_PRESSED", "INDICATOR_BORDER"))
+SCROLL_ACTIVE, ACCENT_HOVER, ACCENT_PRESSED, SELECTED_FG, WHITE, SELECT = (
+    Color(key) for key in ("SCROLL_ACTIVE", "ACCENT_HOVER", "ACCENT_PRESSED", "SELECTED_FG", "WHITE", "SELECT"))
+SERIES_CPU, SERIES_GPU, TEMP_OK, TEMP_WARM, RATE_FAST, RATE_GB, MEM_BAR, WAN_OK = (
+    Color(key) for key in ("SERIES_CPU", "SERIES_GPU", "TEMP_OK", "TEMP_WARM", "RATE_FAST", "RATE_GB", "MEM_BAR", "WAN_OK"))
+
+
+def use_font(name):
+    """字号系数只在启动时设定。运行中改设置要等下次创建控件才生效。"""
+    global _font_factor
+    _font_factor = FONT_FACTORS.get(name, 1.0)
+
+
+def font(size, weight=None, numeric=False, family=None):
+    face = family or (NUM if numeric else FONT)
+    scaled = max(1, round(size * _font_factor))
+    return (face, scaled, weight) if weight else (face, scaled)
+
+
+def apply_scale(root, percent):
+    """叠在系统 DPI 之上。必须在创建任何使用 p 单位的控件之前调用一次。"""
+    factor = SCALE_FACTORS.get(percent, 1.0)
+    if factor == 1.0:
+        return
+    base = float(root.tk.call("tk", "scaling"))
+    root.tk.call("tk", "scaling", base * factor)
+
+
+def resolve_appearance(name):
+    if name == "system":
+        return "light" if windows_app_uses_light_theme() else "dark"
+    return name if name in ("dark", "light") else "dark"
+
+
+def windows_app_uses_light_theme():
+    try:
+        import winreg
+        with winreg.OpenKey(winreg.HKEY_CURRENT_USER,
+                            r"Software\Microsoft\Windows\CurrentVersion\Themes\Personalize") as key:
+            value, _ = winreg.QueryValueEx(key, "AppsUseLightTheme")
+        return bool(value)
+    except OSError:
+        return False
+
+
+def color_map(old, new):
+    """旧色值 -> 新色值。重复色值保留先出现的键，和配色表的顺序一致。"""
+    mapping = {}
+    for key, value in old.items():
+        mapping.setdefault(value.lower(), new[key])
+    return mapping
+
+
+def set_menu_theme(mode):
+    """右键菜单跟随当前界面，不跟随系统。失败则保持系统菜单。"""
+    try:
+        ux = ctypes.WinDLL("uxtheme")
+        ux[135](2 if mode == "dark" else 3)  # SetPreferredAppMode: ForceDark / ForceLight
+        ux[136]()  # FlushMenuThemes
+    except (AttributeError, OSError):
+        pass
 
 
 def grayscale_text():
@@ -59,7 +167,7 @@ def grayscale_text():
                 @ctypes.WINFUNCTYPE(ctypes.c_void_p, ctypes.c_void_p)
                 def hook(logfont):
                     lf = ctypes.create_string_buffer(ctypes.string_at(logfont, 92), 92)  # sizeof(LOGFONTW)
-                    if lf[26] == b"\x00":  # lfQuality: DEFAULT_QUALITY -> ANTIALIASED_QUALITY
+                    if resolved == "dark" and lf[26] == b"\x00":  # 浅色底用系统 ClearType; 深色底改灰度抗锯齿
                         lf[26] = b"\x04"
                     return real(lf)
                 grayscale_text.hook = hook  # 保持引用, 否则回调被回收
@@ -76,7 +184,12 @@ def set_icon(win):
         win.iconbitmap(ICON)
     except tk.TclError:
         pass
-    try:  # Windows 10/11 深色标题栏, 与界面配色一致
+    set_titlebar(win)
+
+
+def set_titlebar(win):
+    """标题栏跟随当前主题。窗口尚未映射时失败，调用方忽略即可。"""
+    try:
         from ctypes import wintypes as wt
         win.update_idletasks()
         user = ctypes.windll.user32
@@ -85,11 +198,11 @@ def set_icon(win):
         hwnd = user.GetAncestor(win.winfo_id(), 2)  # GA_ROOT: this dialog's native wrapper, not its owner.
         dwm = ctypes.windll.dwmapi
         dwm.DwmSetWindowAttribute.argtypes = [wt.HWND, wt.DWORD, ctypes.c_void_p, wt.DWORD]
-        on = ctypes.c_int(1)
-        dwm.DwmSetWindowAttribute(hwnd, 20, ctypes.byref(on), ctypes.sizeof(on))
+        dark = ctypes.c_int(1 if resolved == "dark" else 0)
+        dwm.DwmSetWindowAttribute(hwnd, 20, ctypes.byref(dark), ctypes.sizeof(dark))
         # Windows 11's explicit caption colors also cover nested/active dialogs
         # when the OS uses a light theme. Older systems ignore these attributes.
-        for attribute, color in ((35, CARD), (36, FG)):
+        for attribute, color in ((35, str(CARD)), (36, str(FG))):
             red, green, blue = (int(color[i:i + 2], 16) for i in (1, 3, 5))
             value = wt.DWORD(red | green << 8 | blue << 16)
             dwm.DwmSetWindowAttribute(hwnd, attribute, ctypes.byref(value), ctypes.sizeof(value))
@@ -98,6 +211,7 @@ def set_icon(win):
 
 
 def _rgb(c):
+    c = str(c)
     return tuple(int(c[i:i + 2], 16) for i in (1, 3, 5))
 
 
@@ -172,32 +286,34 @@ def switch_png(width, height, track, border, knob, on):
 
 
 def apply_style(root):
-    """ttk 控件 (按钮、输入框、开关等) 换成深色, 与主界面一致。返回自绘图片, 调用方须保持引用。"""
+    """ttk 控件换成当前主题。可重复调用；自绘图片保持同一批对象，调用方须保持引用。"""
     # 下拉框收起时滚轮只用于滚动页面，避免悬停就改动并保存选项。
     # 弹出的列表有独立的绑定，仍可滚动；方向键选择也不受影响。
     for sequence in ("<MouseWheel>", "<Button-4>", "<Button-5>"):
         root.unbind_class("TCombobox", sequence)
     s = ttk.Style(root)
-    s.theme_use("clam")
-    s.configure(".", background=BG, foreground=FG, font=(FONT, 9))
+    first = not getattr(apply_style, "ready", False)
+    if first:
+        s.theme_use("clam")  # 再次调用会清掉自定义元素，换主题时不再切主题引擎
+    s.configure(".", background=BG, foreground=FG, font=font(9))
     s.configure("TLabelframe", background=BG, bordercolor=BORDER, lightcolor=BORDER, darkcolor=BORDER)
-    s.configure("TLabelframe.Label", background=BG, foreground=MUTED, font=(FONT, 9, "bold"))
+    s.configure("TLabelframe.Label", background=BG, foreground=MUTED, font=font(9, "bold"))
     s.configure("TButton", background=CARD, foreground=FG, bordercolor=BORDER, lightcolor=CARD,
                 darkcolor=CARD, focuscolor=CARD, padding=("10p", "3p"), width=0)  # 宽度随文字, 不用主题默认的最小宽度
-    hover = [("pressed", BORDER), ("active", "#2a2e37")]
+    hover = [("pressed", BORDER), ("active", BUTTON_HOVER)]
     s.map("TButton", background=hover, lightcolor=hover, darkcolor=hover)
     # 置顶开启时的按钮样式
-    s.configure("On.TButton", background=PIN, foreground="#93c5fd", bordercolor="#3b82f6",
+    s.configure("On.TButton", background=PIN, foreground=ON_FG, bordercolor=ON_BORDER,
                 lightcolor=PIN, darkcolor=PIN, focuscolor=PIN)
-    hover = [("pressed", "#1a3354"), ("active", "#24466f")]
+    hover = [("pressed", ON_PRESSED), ("active", ON_HOVER)]
     s.map("On.TButton", background=hover, lightcolor=hover, darkcolor=hover)
     for w in ("TCheckbutton", "TRadiobutton"):
         # 单选框: clam 默认的圆圈只有十来个像素, 高 DPI 下太小; 边框调亮, 未选中时在深色底上也看得见 (勾选框见下面的自绘图标)
         s.configure(w, background=BG, foreground=FG, indicatorbackground=CARD, indicatorforeground=FG,
                     indicatorsize=root.winfo_pixels("9p"), indicatormargin=(0, 0, "5p", 0),
-                    upperbordercolor="#5a6070", lowerbordercolor="#5a6070", focuscolor=BG, padding=(0, "2p"))
+                    upperbordercolor=INDICATOR_BORDER, lowerbordercolor=INDICATOR_BORDER, focuscolor=BG, padding=(0, "2p"))
         s.map(w, background=[("active", BG)], indicatorbackground=[("selected", ACCENT), ("active", TRACK)],
-              indicatorforeground=[("selected", "white")], foreground=[("disabled", MUTED)],
+              indicatorforeground=[("selected", WHITE)], foreground=[("disabled", MUTED)],
               upperbordercolor=[("selected", ACCENT)], lowerbordercolor=[("selected", ACCENT)])
     s.configure("Hint.TLabel", foreground=MUTED)
     # 数值输入框: clam 默认白底, 在深色界面里很突兀
@@ -205,9 +321,9 @@ def apply_style(root):
                 arrowcolor=SUB, bordercolor=BORDER, lightcolor=CARD, darkcolor=CARD,
                 arrowsize=root.winfo_pixels("8p"), padding=("3p", "2p"))
     s.map("TSpinbox", fieldbackground=[("disabled", BG)], foreground=[("disabled", MUTED)],
-          background=[("pressed", BORDER), ("active", "#2a2e37")], arrowcolor=[("active", FG)],
+          background=[("pressed", BORDER), ("active", BUTTON_HOVER)], arrowcolor=[("active", FG)],
           bordercolor=[("focus", ACCENT)], lightcolor=[("focus", ACCENT)], darkcolor=[("focus", ACCENT)],
-          selectbackground=[("focus", ACCENT)], selectforeground=[("focus", "white")])
+          selectbackground=[("focus", ACCENT)], selectforeground=[("focus", WHITE)])
     for kind in ("TEntry", "TCombobox"):
         s.configure(kind, fieldbackground=CARD, foreground=FG, background=TRACK,
                     insertcolor=FG, arrowcolor=FG, bordercolor=BORDER, lightcolor=CARD,
@@ -216,9 +332,9 @@ def apply_style(root):
               foreground=[("disabled", MUTED), ("readonly", FG)],
               bordercolor=[("focus", ACCENT)], lightcolor=[("focus", ACCENT)],
               darkcolor=[("focus", ACCENT)], selectbackground=[("focus", ACCENT)],
-              selectforeground=[("focus", "white")])
-    # 下拉箭头按下/悬停: clam 默认是浅色块, 改成与数值框一致的深色; 弹出列表用深色细边框
-    s.map("TCombobox", background=[("pressed", BORDER), ("active", "#2a2e37")],
+              selectforeground=[("focus", WHITE)])
+    # 下拉箭头按下/悬停: clam 默认是浅色块, 改成与数值框一致; 弹出列表用细边框
+    s.map("TCombobox", background=[("pressed", BORDER), ("active", BUTTON_HOVER)],
           arrowcolor=[("disabled", MUTED)])
     s.configure("ComboboxPopdownFrame", background=CARD, bordercolor=BORDER, lightcolor=CARD,
                 darkcolor=CARD, relief="solid", borderwidth=1)
@@ -235,52 +351,43 @@ def apply_style(root):
     s.configure("Treeview", background=CARD, fieldbackground=CARD, foreground=FG,
                 rowheight=root.winfo_pixels("24p"), borderwidth=0,
                 bordercolor=CARD, lightcolor=CARD, darkcolor=CARD, relief="flat")
-    s.map("Treeview", background=[("selected", PIN)], foreground=[("selected", "#bfdbfe")])
+    s.map("Treeview", background=[("selected", PIN)], foreground=[("selected", SELECTED_FG)])
     s.configure("Treeview.Heading", background=TRACK, foreground=SUB,
                 bordercolor=BORDER, lightcolor=TRACK, darkcolor=TRACK, padding=("6p", "5p"))
     s.map("Treeview.Heading", background=[("active", BORDER)], relief=[("active", "flat")])
-    s.configure("Router.Treeview", font=(FONT, 8), rowheight=root.winfo_pixels("23p"))
-    s.layout("Router.Treeview", [("Treeview.treearea", {"sticky": "nswe"})])
-    s.configure("Router.Treeview.Heading", font=(FONT, 8), background=CARD,
+    s.configure("Router.Treeview", font=font(8), rowheight=root.winfo_pixels("23p"))
+    s.configure("Router.Treeview.Heading", font=font(8), background=CARD,
                 lightcolor=CARD, darkcolor=CARD, bordercolor=CARD, relief="flat", padding=("5p", "5p"))
     s.configure("Vertical.TScrollbar", background=TRACK, troughcolor=BG,
                 bordercolor=BG, lightcolor=TRACK, darkcolor=TRACK, arrowcolor=SUB)
     s.map("Vertical.TScrollbar", background=[("active", BORDER), ("pressed", MUTED)])
-    # 主界面的细滚动条: 无箭头, 只有滑块, 浮在卡片右侧留白上
-    s.layout("Thin.Vertical.TScrollbar", [("Vertical.Scrollbar.trough", {"sticky": "ns", "children": [
-        ("Vertical.Scrollbar.thumb", {"expand": "1", "sticky": "nswe"})]})])
     s.configure("Thin.Vertical.TScrollbar", background=TRACK, troughcolor=BG, bordercolor=BG,
                 lightcolor=TRACK, darkcolor=TRACK, gripcount=0, arrowsize=root.winfo_pixels("5p"))
-    s.map("Thin.Vertical.TScrollbar", background=[("pressed", MUTED), ("active", "#4a505d")],
-          lightcolor=[("pressed", MUTED), ("active", "#4a505d")], darkcolor=[("pressed", MUTED), ("active", "#4a505d")])
-    root.option_add("*TCombobox*Listbox.background", CARD)
-    root.option_add("*TCombobox*Listbox.foreground", FG)
-    root.option_add("*TCombobox*Listbox.selectBackground", PIN)
-    root.option_add("*TCombobox*Listbox.selectForeground", FG)
-    root.option_add("*TCombobox*Listbox.font", (FONT, 9))
-    # 勾选框换成自绘图标 (clam 自带的选中标记是 ×, 不是对号)
-    size, gap, border = root.winfo_pixels("9p"), root.winfo_pixels("5p"), "#5a6070"
-    img = lambda *a: tk.PhotoImage(data=check_png(size, gap, *a), format="png")
-    check_imgs = (img(CARD, border), img(ACCENT, ACCENT, "#ffffff"), img(TRACK, border),
-                        img(BG, BORDER), img(TRACK, TRACK, MUTED))  # 未选、选中、悬停、禁用、禁用且选中
-    off, on, hover, dis, dis_on = check_imgs
-    s.element_create("Check.indicator", "image", off, ("disabled", "selected", dis_on), ("disabled", dis),
-                     ("selected", on), ("active", hover))
-    s.layout("TCheckbutton", [("Checkbutton.padding", {"sticky": "nswe", "children": [
-        ("Check.indicator", {"side": "left", "sticky": ""}),
-        ("Checkbutton.focus", {"side": "left", "sticky": "w", "children": [
-            ("Checkbutton.label", {"sticky": "nswe"})]})]})])
-    # 设置页的开关 (Windows 11 样式), 代替勾选框表示即时生效的开/关
-    w, h = root.winfo_pixels("28p"), root.winfo_pixels("14p")
-    sw = lambda *a: tk.PhotoImage(data=switch_png(w, h, *a), format="png")
-    switch_imgs = (sw(FIELD, MUTED, SUB, False), sw(TRACK, SUB, FG, False),
-                         sw(ACCENT, ACCENT, "#ffffff", True), sw("#3b82f6", "#3b82f6", "#ffffff", True),
-                         sw(CARD, CHIP_HOVER, CHIP_HOVER, False), sw(TRACK, TRACK, MUTED, True))
-    off, off_hover, on, on_hover, dis_off, dis_on = switch_imgs
-    s.element_create("Switch.indicator", "image", off, ("disabled", "selected", dis_on), ("disabled", dis_off),
-                     ("selected", "active", on_hover), ("selected", on), ("active", off_hover))
-    s.layout("Switch.TCheckbutton", [("Checkbutton.padding", {"sticky": "nswe", "children": [
-        ("Switch.indicator", {"side": "left", "sticky": ""})]})])
+    s.map("Thin.Vertical.TScrollbar", background=[("pressed", MUTED), ("active", SCROLL_ACTIVE)],
+          lightcolor=[("pressed", MUTED), ("active", SCROLL_ACTIVE)], darkcolor=[("pressed", MUTED), ("active", SCROLL_ACTIVE)])
+    root.option_add("*TCombobox*Listbox.background", str(CARD))
+    root.option_add("*TCombobox*Listbox.foreground", str(FG))
+    root.option_add("*TCombobox*Listbox.selectBackground", str(PIN))
+    root.option_add("*TCombobox*Listbox.selectForeground", str(FG))
+    root.option_add("*TCombobox*Listbox.font", font(9))
+    images = _style_images(root)
+    if first:
+        s.layout("Router.Treeview", [("Treeview.treearea", {"sticky": "nswe"})])
+        s.layout("Thin.Vertical.TScrollbar", [("Vertical.Scrollbar.trough", {"sticky": "ns", "children": [
+            ("Vertical.Scrollbar.thumb", {"expand": "1", "sticky": "nswe"})]})])
+        off, on, hover, dis, dis_on = images[:5]
+        s.element_create("Check.indicator", "image", off, ("disabled", "selected", dis_on), ("disabled", dis),
+                         ("selected", on), ("active", hover))
+        s.layout("TCheckbutton", [("Checkbutton.padding", {"sticky": "nswe", "children": [
+            ("Check.indicator", {"side": "left", "sticky": ""}),
+            ("Checkbutton.focus", {"side": "left", "sticky": "w", "children": [
+                ("Checkbutton.label", {"sticky": "nswe"})]})]})])
+        off, off_hover, on, on_hover, dis_off, dis_on = images[5:]
+        s.element_create("Switch.indicator", "image", off, ("disabled", "selected", dis_on), ("disabled", dis_off),
+                         ("selected", "active", on_hover), ("selected", on), ("active", off_hover))
+        s.layout("Switch.TCheckbutton", [("Checkbutton.padding", {"sticky": "nswe", "children": [
+            ("Switch.indicator", {"side": "left", "sticky": ""})]})])
+        apply_style.ready = True
     s.configure("Switch.TCheckbutton", background=CARD, padding=0)
     s.map("Switch.TCheckbutton", background=[("active", CARD)])
     # 设置行 (卡片底色) 里的控件: 背景跟随卡片, 输入框比卡片暗一档
@@ -295,9 +402,117 @@ def apply_style(root):
               lightcolor=[("focus", ACCENT), ("disabled", CARD)], darkcolor=[("focus", ACCENT), ("disabled", CARD)],
               bordercolor=[("focus", ACCENT)])
     # 主操作按钮 (提示条里的"启动")
-    s.configure("Accent.TButton", background=ACCENT, foreground="white", bordercolor=ACCENT,
+    s.configure("Accent.TButton", background=ACCENT, foreground=WHITE, bordercolor=ACCENT,
                 lightcolor=ACCENT, darkcolor=ACCENT, focuscolor=ACCENT, anchor="center")
-    hover = [("disabled", CARD), ("pressed", "#1d4ed8"), ("active", "#3b82f6")]
+    hover = [("disabled", CARD), ("pressed", ACCENT_PRESSED), ("active", ACCENT_HOVER)]
     s.map("Accent.TButton", background=hover, lightcolor=hover, darkcolor=hover,
           bordercolor=[("disabled", BORDER)], foreground=[("disabled", MUTED)])
-    return check_imgs + switch_imgs
+    return images
+
+
+def _style_images(root):
+    """勾选框和开关图标。首次创建，之后把新主题画进同一批 PhotoImage，元素不用重建。"""
+    size, gap = root.winfo_pixels("9p"), root.winfo_pixels("5p")
+    border = INDICATOR_BORDER
+    check = (check_png(size, gap, CARD, border), check_png(size, gap, ACCENT, ACCENT, WHITE),
+             check_png(size, gap, TRACK, border), check_png(size, gap, BG, BORDER),
+             check_png(size, gap, TRACK, TRACK, MUTED))
+    w, h = root.winfo_pixels("28p"), root.winfo_pixels("14p")
+    switch = (switch_png(w, h, FIELD, MUTED, SUB, False), switch_png(w, h, TRACK, SUB, FG, False),
+              switch_png(w, h, ACCENT, ACCENT, WHITE, True), switch_png(w, h, ACCENT_HOVER, ACCENT_HOVER, WHITE, True),
+              switch_png(w, h, CARD, CHIP_HOVER, CHIP_HOVER, False), switch_png(w, h, TRACK, TRACK, MUTED, True))
+    pngs = check + switch
+    images = getattr(apply_style, "images", None)
+    if images is None:
+        images = tuple(tk.PhotoImage(data=png, format="png") for png in pngs)
+        apply_style.images = images
+        return images
+    for img, png in zip(images, pngs):
+        fresh = tk.PhotoImage(data=png, format="png")
+        img.configure(width=fresh.width(), height=fresh.height())
+        img.blank()
+        img.tk.call(img, "copy", fresh)
+    return images
+
+
+_WIDGET_COLORS = ("bg", "fg", "background", "foreground", "highlightbackground", "highlightcolor",
+                  "activebackground", "activeforeground", "selectbackground", "selectforeground", "insertbackground")
+
+
+def recolor_tree(widget, old, new):
+    """把已经画上的结构色和语义色换成新主题。ttk 控件靠样式，不逐个改底色。"""
+    mapping = color_map(old, new)
+    _recolor(widget, mapping)
+
+
+def _mapped(value, mapping):
+    text = str(value).lower()
+    new = mapping.get(text)
+    return new if new and new.lower() != text else None
+
+
+def _recolor(widget, mapping):
+    if isinstance(widget, (tk.Text, ttk.Treeview)):
+        for tag in widget.tag_names():
+            for option in ("foreground", "background"):
+                try:
+                    value = widget.tag_cget(tag, option)
+                except tk.TclError:
+                    continue
+                new = _mapped(value, mapping)
+                if new:
+                    widget.tag_configure(tag, **{option: new})
+    if isinstance(widget, tk.Canvas):
+        for item in widget.find_all():
+            for option in ("fill", "outline"):
+                try:
+                    value = widget.itemcget(item, option)
+                except tk.TclError:
+                    continue
+                new = _mapped(value, mapping)
+                if new:
+                    widget.itemconfigure(item, **{option: new})
+    if isinstance(widget, ttk.Widget):
+        for option in ("foreground", "background"):
+            try:
+                value = widget.cget(option)
+            except tk.TclError:
+                continue
+            new = _mapped(value, mapping)
+            if new:
+                widget.configure(**{option: new})
+    elif not isinstance(widget, ttk.Widget):
+        for option in _WIDGET_COLORS:
+            try:
+                value = widget.cget(option)
+            except tk.TclError:
+                continue
+            new = _mapped(value, mapping)
+            if new:
+                widget.configure(**{option: new})
+    for child in widget.winfo_children():
+        _recolor(child, mapping)
+
+
+def refresh_titlebars(root):
+    set_titlebar(root)
+    for child in root.winfo_children():
+        if isinstance(child, tk.Toplevel):
+            set_titlebar(child)
+
+
+def apply_appearance(name, root=None):
+    """切换深色或浅色。root 已有控件时重做样式、已绘制的颜色和标题栏。"""
+    global resolved
+    mode = resolve_appearance(name)
+    old = dict(_current)
+    _current.clear()
+    _current.update(LIGHT if mode == "light" else DARK)
+    previous = resolved
+    resolved = mode
+    set_menu_theme(mode)
+    if root is not None and (previous != mode or old != _current):
+        apply_style(root)
+        recolor_tree(root, old, _current)
+        refresh_titlebars(root)
+    return mode

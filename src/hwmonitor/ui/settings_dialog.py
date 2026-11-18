@@ -13,7 +13,8 @@ from hwmonitor.sensors import hwinfo
 from hwmonitor.system import autostart, credentials, mailer
 from hwmonitor.system.webbridge import WebError
 from hwmonitor.system.webserver import lan_addresses
-from hwmonitor.ui.theme import ACCENT, BG, BORDER, CARD, FG, FONT, MUTED, NAV_HOVER, RED, SUB
+from hwmonitor.ui import theme
+from hwmonitor.ui.theme import ACCENT, BG, BORDER, CARD, FG, MUTED, NAV_HOVER, RED, SUB, font as ui_font
 
 INPUTS = ("TEntry", "TSpinbox", "TCombobox", "Entry", "Spinbox", "Text")  # 点这些控件时保留焦点
 
@@ -43,7 +44,7 @@ class SettingsDialogMixin:
         footer = tk.Frame(body, bg=BG, padx="16p", pady="10p")
         footer.pack(side="bottom", fill="x")
         tk.Frame(body, bg=BORDER, height=1).pack(side="bottom", fill="x")
-        tk.Label(footer, text="修改即时生效并自动保存", bg=BG, fg=MUTED, font=(FONT, 9)).pack(side="left")
+        tk.Label(footer, text="修改即时生效并自动保存", bg=BG, fg=MUTED, font=ui_font(9)).pack(side="left")
         ttk.Button(footer, text="完成", style="Accent.TButton", command=w.destroy).pack(side="right")
         nav = tk.Frame(body, bg=BG, padx="8p", pady="10p")
         nav.pack(side="left", fill="y")
@@ -58,7 +59,7 @@ class SettingsDialogMixin:
         for key, title, icon in self.SETTINGS_PAGES:
             self._settings_nav[key] = self._nav_item(nav, key, title, icon if icon_font else None, icon_font)
             frame = tk.Frame(content, bg=BG)
-            tk.Label(frame, text=title, bg=BG, fg=FG, font=(FONT, 15, "bold"), anchor="w").pack(
+            tk.Label(frame, text=title, bg=BG, fg=FG, font=ui_font(15, "bold"), anchor="w").pack(
                 fill="x", padx="20p", pady=("12p", "2p"))
             builders[key](self._scroll_area(frame))
             self.settings_pages[key] = frame
@@ -96,7 +97,7 @@ class SettingsDialogMixin:
         item.labels = []
         if icon:
             item.labels.append(tk.Label(item, text=icon, bg=BG, fg=SUB, font=icon_font, padx="8p"))
-        item.labels.append(tk.Label(item, text=title, bg=BG, fg=SUB, font=(FONT, 10), anchor="w",
+        item.labels.append(tk.Label(item, text=title, bg=BG, fg=SUB, font=ui_font(10), anchor="w",
                                     padx="2p" if icon else "10p", pady="6p", width=8))
         for label in item.labels:
             label.pack(side="left")
@@ -175,7 +176,7 @@ class SettingsDialogMixin:
     @staticmethod
     def _group(page, title):
         """设置分组: 小标题 + 一组紧挨着的设置行。"""
-        tk.Label(page, text=title, bg=BG, fg=SUB, font=(FONT, 9, "bold"), anchor="w").pack(fill="x", pady=("12p", "6p"))
+        tk.Label(page, text=title, bg=BG, fg=SUB, font=ui_font(9, "bold"), anchor="w").pack(fill="x", pady=("12p", "6p"))
         group = tk.Frame(page, bg=BG)
         group.pack(fill="x")
         return group
@@ -189,9 +190,9 @@ class SettingsDialogMixin:
         text = tk.Frame(row, bg=CARD)
         text.grid(row=0, column=0, sticky="ew")
         wrap = row.winfo_pixels("240p")
-        row.title = tk.Label(text, text=title, bg=CARD, fg=FG, font=(FONT, 9), anchor="w", justify="left", wraplength=wrap)
+        row.title = tk.Label(text, text=title, bg=CARD, fg=FG, font=ui_font(9), anchor="w", justify="left", wraplength=wrap)
         row.title.pack(fill="x")
-        row.desc = tk.Label(text, text=desc, bg=CARD, fg=MUTED, font=(FONT, 8), anchor="w", justify="left", wraplength=wrap)
+        row.desc = tk.Label(text, text=desc, bg=CARD, fg=MUTED, font=ui_font(8), anchor="w", justify="left", wraplength=wrap)
         row.desc_text = desc
         if desc:
             row.desc.pack(fill="x")
@@ -235,7 +236,7 @@ class SettingsDialogMixin:
     def _switch(row, value, command):
         """开关: 左侧显示"开/关"文字 (同 Windows 11), command(新状态)。"""
         var = tk.BooleanVar(value=value)
-        state = tk.Label(row.control, text="开" if value else "关", bg=CARD, fg=SUB, font=(FONT, 9))
+        state = tk.Label(row.control, text="开" if value else "关", bg=CARD, fg=SUB, font=ui_font(9))
         state.pack(side="left", padx=(0, "8p"))
         row.switch = ttk.Checkbutton(row.control, style="Switch.TCheckbutton", variable=var, cursor="hand2",
                                      command=lambda: command(var.get()))
@@ -259,7 +260,7 @@ class SettingsDialogMixin:
         spin.bind("<FocusOut>", commit)
         SettingsDialogMixin._finish_edit(spin, commit)
         # 单位定宽, 各行输入框右侧对齐
-        tk.Label(row.control, text=unit, bg=CARD, fg=SUB, font=(FONT, 9), width=4, anchor="w").pack(side="left", padx=("6p", 0))
+        tk.Label(row.control, text=unit, bg=CARD, fg=SUB, font=ui_font(9), width=4, anchor="w").pack(side="left", padx=("6p", 0))
         return spin
 
     @staticmethod
@@ -287,6 +288,18 @@ class SettingsDialogMixin:
         self._float_var = self._switch(row, self.float_win is not None, lambda _: self.toggle_floating())
         row = self._row(group, "主窗口置顶", "主窗口和它打开的历史、硬件信息等窗口保持在最前；也可在托盘图标右键菜单切换")
         self._topmost_var = self._switch(row, self.settings["topmost"], self.set_topmost)
+        appearances = ("dark", "light", "system")
+        row = self._row(group, "主题", "深色、浅色，或跟随 Windows 应用主题；立刻生效")
+        self._choice(row, ("深色", "浅色", "跟随系统"), appearances.index(self.settings["appearance"]),
+                     lambda i: self._set_appearance(appearances[i]), width=12)
+        sizes = ("small", "normal", "large")
+        row = self._row(group, "字体大小", "小、标准或大。下次启动生效，并叠在界面缩放之上")
+        self._choice(row, ("小", "标准", "大"), sizes.index(self.settings["font_size"]),
+                     lambda i: self._save_option("font_size", sizes[i]), width=12)
+        scales = (100, 125, 150, 175, 200)
+        row = self._row(group, "界面缩放", "在系统 DPI 之上再放大界面和文字。下次启动生效")
+        self._choice(row, tuple(f"{n}%" for n in scales), scales.index(self.settings["ui_scale"]),
+                     lambda i: self._save_option("ui_scale", scales[i]), width=12)
 
         group = self._group(page, "启动")
         row = self._row(group, "开机自动启动", "登录后在托盘中自动开始监控；开启或关闭时需确认一次 UAC")
@@ -494,7 +507,7 @@ class SettingsDialogMixin:
                             command=save_nics).pack(anchor="w")
         if not nics:
             tk.Label(nic_row.control, text="硬件传感器初始化完成后可选择网卡。", bg=CARD, fg=MUTED,
-                     font=(FONT, 9)).pack(anchor="w")
+                     font=ui_font(9)).pack(anchor="w")
         self._enable([nic_row], self.settings["nic_ids"] is not None)
 
         group = self._group(page, "主界面")
@@ -611,12 +624,12 @@ class SettingsDialogMixin:
         text = tk.Frame(head, bg=bg)
         text.pack(side="left", fill="x", expand=True)
         head.label = tk.Label(text, text=title, bg=bg, fg=FG if subtitle is not None else SUB,
-                              font=(FONT, 10 if subtitle is not None else 9, "bold"), anchor="w", justify="left")
+                              font=ui_font(10 if subtitle is not None else 9, "bold"), anchor="w", justify="left")
         head.label.pack(fill="x")
-        head.subtitle = tk.Label(text, text=subtitle or "", bg=bg, fg=MUTED, font=(FONT, 8), anchor="w")
+        head.subtitle = tk.Label(text, text=subtitle or "", bg=bg, fg=MUTED, font=ui_font(8), anchor="w")
         if subtitle is not None:
             head.subtitle.pack(fill="x", pady=("3p", 0))
-        action = tk.Label(head, bg=bg, fg=MUTED, font=(FONT, 8))
+        action = tk.Label(head, bg=bg, fg=MUTED, font=ui_font(8))
         action.pack(side="right")
         group = tk.Frame(page, bg=bg)
         def rewrap(_=None):
@@ -675,7 +688,7 @@ class SettingsDialogMixin:
         head.router_id = cfg["id"]
         head.router_body = group
         def section(label, before=None):
-            label = tk.Label(group, text=label, bg=CARD, fg=SUB, font=(FONT, 8, "bold"), anchor="w",
+            label = tk.Label(group, text=label, bg=CARD, fg=SUB, font=ui_font(8, "bold"), anchor="w",
                              padx="12p", pady="7p")
             label.pack(fill="x", **({"before": before} if before is not None else {}))
         def field(title, desc="", stacked=False):
@@ -817,6 +830,19 @@ class SettingsDialogMixin:
         self._row(group, f"硬件监控 {__version__}",
                   "基于开源项目 LibreHardwareMonitor 开发，内置其硬件读取库 LibreHardwareMonitorLib（MPL-2.0）"
                   "和 PawnIO 驱动安装程序（GPL-2.0）；界面、传感器数据接口和数据整理由本程序实现。")
+
+    def _set_appearance(self, name):
+        self._save_option("appearance", name)
+        theme.apply_appearance(name, self.root)
+        if getattr(self, "settings_win", None) and self.settings_win.winfo_exists():
+            self.settings_select(self._settings_page)
+        if self.data:
+            self.render(self.data)
+            self._update_floating(self.data)
+        redraw = getattr(self, "_redraw_history", None)
+        history = getattr(self, "history_win", None)
+        if redraw and history and history.winfo_exists():
+            redraw()
 
     def _save_option(self, key, value):
         self.settings[key] = value
